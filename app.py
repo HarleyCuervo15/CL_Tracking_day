@@ -28,22 +28,19 @@ st.set_page_config(page_title="Tracking CPE", page_icon="📊", layout="wide")
 # ----------------------------------------------------------------
 st.markdown("""
 <style>
-  .stApp { background:#00377d; color:#fff; }
-  section[data-testid="stSidebar"] { background:#062d62; }
-  h1,h2,h3,h4,p,label,span,div { color:#fff; }
+  /* Solo las tarjetas KPI. El resto lo maneja .streamlit/config.toml,
+     que es lo que hace que menus, uploader y tablas se vean bien. */
   .tarjeta { background:#0b3977; border:1px solid #2c659e; border-top:3px solid #3ed598;
              border-radius:10px; padding:14px 16px; height:100%; }
-  .tarjeta.gasto { border-top-color:#ff5a5f; }
+  .tarjeta.gasto  { border-top-color:#ff5a5f; }
   .tarjeta.suelta { border-top-color:#ffb020; }
   .tarjeta h3 { font-size:12px; margin:0 0 8px; color:#c9dcf3; font-weight:600;
                 letter-spacing:.3px; }
-  .valor { font-size:23px; font-weight:700; line-height:1.15; }
-  .sub { font-size:11px; color:#c9dcf3; margin-top:7px; line-height:1.5; }
-  .ok   { color:#3ed598; font-weight:700; }
-  .mal  { color:#ff5a5f; font-weight:700; }
-  .tibio{ color:#ffb020; font-weight:700; }
-  .stDataFrame { border:1px solid #2c659e; border-radius:8px; }
-  div[data-testid="stMetricValue"] { font-size:20px; }
+  .tarjeta .valor { font-size:23px; font-weight:700; line-height:1.15; color:#fff; }
+  .tarjeta .sub { font-size:11px; color:#c9dcf3; margin-top:7px; line-height:1.5; }
+  .tarjeta .ok    { color:#3ed598; font-weight:700; }
+  .tarjeta .mal   { color:#ff5a5f; font-weight:700; }
+  .tarjeta .tibio { color:#ffb020; font-weight:700; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -69,19 +66,26 @@ def cargar_metas(contenido: bytes | None) -> pd.DataFrame:
     return m
 
 
-def revisar_calidad(curva, dias_data):
+def revisar_calidad(curva, dias_data, mes_nombre):
     """Dias donde un volumen se desploma frente a la mediana: casi siempre
     es un cargue incompleto, no una caida real."""
     avisos = []
     con_datos = curva.head(dias_data)
+    nombres = {"LEADS": "Lead", "Q_NETO": "Q Neto · leads calificados",
+               "Q_EMI": "Q Emi · venta cantada", "Q_TER": "Q Ter · venta"}
     for col in ["LEADS", "Q_NETO", "Q_EMI", "Q_TER"]:
         s = con_datos[col]
         if len(s) < 4 or s.median() <= 0:
             continue
-        raros = s[s < s.median() * 0.25]
-        for dia, valor in raros.items():
-            avisos.append({"Metrica": col, "Dia": dia, "Valor": valor,
-                           "Tipico (mediana)": s.median()})
+        for dia, valor in s[s < s.median() * 0.25].items():
+            falta = s.median() - valor
+            avisos.append({
+                "Métrica": nombres[col],
+                "Día": f"{dia} de {mes_nombre}",
+                "Ese día": valor,
+                "Un día normal": s.median(),
+                "Caída": f"-{1 - valor / s.median():.0%}",
+                "Faltarían": f"~{falta:,.0f}"})
     return pd.DataFrame(avisos)
 
 
@@ -192,15 +196,22 @@ st.caption(f"{area} · Móvil + Fijo (Mixto repartido al {split:.0%}) · "
            f"último dato {diario['FECHA'].max().date()} · "
            f"proyección run-rate ×{factor:.4f}")
 
-alertas = revisar_calidad(curva, dias_data)
+MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+         "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+alertas = revisar_calidad(curva, dias_data, MESES[mm - 1])
 if not alertas.empty:
     st.warning(
-        f"**Revisa la calidad del dato antes de circular esto.** "
-        f"Hay {len(alertas)} caso(s) donde un volumen se desploma contra su propia "
-        f"mediana. Cuando pasa en todos los canales el mismo día suele ser un cargue "
-        f"incompleto, no una caída real — y te distorsiona el CPA o el CPE proyectado.")
-    st.dataframe(alertas.style.format({"Valor": "{:,.0f}", "Tipico (mediana)": "{:,.0f}"}),
+        f"**Posible dato incompleto — revísalo antes de circular el reporte.** "
+        f"Encontré {len(alertas)} día(s) donde un volumen quedó muy por debajo de lo "
+        f"normal para ese mismo mes. Si la caída aparece en todos los canales a la vez, "
+        f"casi siempre es un cargue que no corrió, no una caída de negocio. "
+        f"El problema es que ese hueco arrastra el total del mes hacia abajo y te infla "
+        f"el costo unitario proyectado (CPL, CPE o CPA).")
+    st.dataframe(alertas.style.format({"Ese día": "{:,.0f}", "Un día normal": "{:,.0f}"}),
                  width="stretch", hide_index=True)
+    st.caption("Qué hacer: confirma con quien maneja la fuente si ese día quedó completo. "
+               "Si el dato no se puede recuperar, dilo explícitamente cuando presentes "
+               "el proyectado.")
 
 # ----------------------------------------------------------------
 # TARJETAS
