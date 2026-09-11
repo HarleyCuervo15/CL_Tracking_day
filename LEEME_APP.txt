@@ -1,0 +1,105 @@
+TRACKING CPE - Aplicacion Streamlit
+============================================================
+
+QUE CAMBIA RESPECTO AL SCRIPT
+------------------------------------------------------------
+Ya NO tienes que subir el archivo de PPTo (16 MB). Las metas
+viven en metas.xlsx (20 KB), que va junto a la app.
+
+Solo subes la maqueta y listo.
+
+
+ARCHIVOS
+------------------------------------------------------------
+app.py             la aplicacion
+tracking_cpe.py    la logica de calculo (compartida con el script)
+extraer_base.py    saca la base de adentro de la maqueta
+generar_metas.py   convierte el PPTo en metas.xlsx
+metas.xlsx         las metas ya normalizadas
+requirements.txt   librerias necesarias
+
+Todos en la misma carpeta. Sugerencia: 2. Scripts
+
+
+INSTALACION (una sola vez)
+------------------------------------------------------------
+1. Abre el simbolo del sistema (busca "cmd")
+
+2. Parate en la carpeta donde dejaste los archivos.
+   Truco: abre la carpeta en el Explorador, haz clic en la
+   barra de direcciones de arriba, escribe cmd y da ENTER.
+   La consola se abre ya parada ahi.
+
+3. Escribe esto y da ENTER:
+      pip install -r requirements.txt
+   Espera a que termine.
+
+
+PARA ABRIRLA (cada vez)
+------------------------------------------------------------
+En esa misma consola:
+      streamlit run app.py
+
+Se abre sola en el navegador. Si no, copia la direccion que
+aparece en la consola (algo como http://localhost:8501).
+
+Para cerrarla: vuelve a la consola y presiona Ctrl + C.
+
+
+COMO SE USA
+------------------------------------------------------------
+1. Panel izquierdo: sube la maqueta (.xlsx)
+2. Espera unos 30 segundos la primera vez. Es la extraccion
+   de las 600 mil filas. Despues queda en cache y es
+   instantaneo aunque cambies mes, area o parametros.
+3. Elige el mes
+4. Si el ultimo dia viene incompleto, baja "Dias con
+   informacion". Todo se recalcula solo.
+
+Pestanas:
+  Curva diaria - dia a dia, meta vs real, mas graficos
+  Maqueta      - los bloques por Movil / Fijo / Mixto
+  Control      - lo que no cruza entre real y PPTo
+  Descargar    - genera el mismo Excel del script
+
+
+UNA VEZ AL MES: ACTUALIZAR LAS METAS
+------------------------------------------------------------
+Cuando llegue el PPTo del mes nuevo, en la consola:
+
+      python generar_metas.py "10__Tigo___MKT_Digital_Perf____Oct_2026.xlsx"
+
+Eso actualiza metas.xlsx. Los meses viejos se conservan; el
+mes que venga en el archivo nuevo reemplaza al anterior.
+
+Si prefieres no tocar la consola, tambien puedes subir un
+metas.xlsx desde el panel izquierdo, en "Actualizar metas".
+
+
+ALERTA DE CALIDAD DEL DATO
+------------------------------------------------------------
+Arriba puede salir un aviso amarillo cuando algun volumen se
+desploma contra su propia mediana. Ejemplo real: el 6 de
+septiembre el Q Ter fue 19 cuando lo normal eran 400-550, en
+TODOS los canales a la vez. Eso no es una caida de negocio,
+es un cargue incompleto - y te distorsiona el CPA proyectado
+en un 12%.
+
+Revisa ese aviso ANTES de circular el reporte.
+
+
+SI ALGO FALLA
+------------------------------------------------------------
+"streamlit no se reconoce como un comando"
+   Falta el paso de instalacion. Repite pip install.
+
+"No hay datos para 2026-XX"
+   La maqueta no tiene ese mes, o esta sin refrescar.
+
+Las metas salen en cero
+   El metas.xlsx no tiene ese mes. Corre generar_metas.py
+   con el PPTo correspondiente.
+
+La app va lenta al subir
+   Normal la primera vez: son 600 mil filas comprimidas
+   adentro del xlsx. Solo pasa una vez por archivo.

@@ -152,22 +152,37 @@ st.sidebar.caption("**Filtros** — el presupuesto no se abre por producto "
                    "ni por plataforma, así que al filtrar se ocultan las metas.")
 
 _p = base[(base["MES"] == mes) & (base["AREA"] == area)]
-productos = sorted(x for x in _p["PRODUCTO"].astype(str).unique() if x and x != "nan")
-plataformas = sorted(x for x in _p["CANAL_SOLICITUD"].astype(str).unique()
-                     if x and x != "nan")
 
-flujos = sorted(x for x in _p["FLUJO"].astype(str).unique() if x and x != "nan")
 
-prod_sel = st.sidebar.multiselect("Producto", productos,
-                                  help="BAF, TV, VOZ, ALTA SIN_EQ... Vacío = todos")
-plat_sel = st.sidebar.multiselect("Plataforma", plataformas,
-                                  help="De dónde entró la solicitud (WEB / APP). "
-                                       "Vacío = todas")
-flujo_sel = st.sidebar.multiselect("Flujo", flujos,
-                                   help="Magento, C2C, WhatsApp. Vacío = todos")
+def opciones(col):
+    """Valores de una columna. Si la columna no existe (extractor viejo)
+    devuelve lista vacia, en vez de tumbar la app."""
+    if col not in _p.columns:
+        return []
+    return sorted(x for x in _p[col].astype(str).unique() if x and x != "nan")
 
-filtros = {"PRODUCTO": prod_sel, "CANAL_SOLICITUD": plat_sel, "FLUJO": flujo_sel}
-hay_filtro = bool(prod_sel or plat_sel or flujo_sel)
+
+DISPONIBLES = [
+    ("PRODUCTO", "Producto", "BAF, TV, VOZ, ALTA SIN_EQ... Vacío = todos"),
+    ("CANAL_SOLICITUD", "Plataforma",
+     "De dónde entró la solicitud (WEB / APP). Vacío = todas"),
+    ("FLUJO", "Flujo", "Magento, C2C, WhatsApp. Vacío = todos"),
+]
+
+filtros, faltantes = {}, []
+for _col, _etq, _ayuda in DISPONIBLES:
+    if _col not in base.columns:
+        faltantes.append(_etq)
+        continue
+    filtros[_col] = st.sidebar.multiselect(_etq, opciones(_col), help=_ayuda)
+
+hay_filtro = any(filtros.values())
+
+if faltantes:
+    st.sidebar.error(
+        f"No disponibles: {', '.join(faltantes)}. El extraer_base.py del repositorio "
+        f"es una versión anterior que no trae esas columnas. Súbelo actualizado, "
+        f"reinicia la app y vuelve a subir la maqueta.")
 
 if hay_filtro:
     st.sidebar.warning("El costo no viene marcado por producto ni por flujo: esas "
@@ -228,13 +243,9 @@ st.caption(f"{area} · Móvil + Fijo (Mixto repartido al {split:.0%}) · "
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
          "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 if hay_filtro:
-    partes = []
-    if prod_sel:
-        partes.append("producto: " + ", ".join(prod_sel))
-    if plat_sel:
-        partes.append("plataforma: " + ", ".join(plat_sel))
-    if flujo_sel:
-        partes.append("flujo: " + ", ".join(flujo_sel))
+    _nombres = {c: e for c, e, _ in DISPONIBLES}
+    partes = [f"{_nombres[c].lower()}: {', '.join(v)}"
+              for c, v in filtros.items() if v]
     st.info(
         f"**Vista filtrada** — {' · '.join(partes)}. "
         f"Las metas quedan ocultas a propósito: el presupuesto solo está abierto "
