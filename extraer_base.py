@@ -27,7 +27,7 @@ NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 # Subir este numero cuando cambien CAMPOS_UTILES o la logica de extraccion.
 # La app lo usa como parte de la llave de cache: asi un cambio de codigo
 # invalida solito el DataFrame guardado, sin tener que limpiar nada a mano.
-VERSION = 2
+VERSION = 3
 
 # Campos que realmente necesitamos para el tracking.
 CAMPOS_UTILES = [
@@ -38,6 +38,8 @@ CAMPOS_UTILES = [
 
 # Columnas de texto: se guardan como categoria. Son pocos valores distintos
 # repetidos 600 mil veces, asi que pasa de ~770 MB a un tercio.
+# Los numeros van en float64: el costo mensual tiene 9 digitos y float32
+# los redondearia.
 TEXTO = ["MES", "SEMANA", "AREA", "TIPO", "CANAL", "CATEGORIA",
          "PRODUCTO", "FAMILIA", "CANAL_SOLICITUD", "FLUJO"]
 NUMERO = ["LEADS", "COSTO", "Q_BRUTO", "Q_NETO", "Q_EMI", "Q_TER"]
@@ -95,7 +97,9 @@ def leer_registros(zf, ruta_rec, nombres, shared, columnas):
     es_cat = [bool(shared[p]) for p in quiero]
 
     # 'i' = codigo de categoria (4 bytes)   'f' = numero (4 bytes)
-    buffers = [array("i") if cat else array("f") for cat in es_cat]
+    # 'd' (float64) y no 'f': con float32, 190.083.749 se redondea a
+    # 190.083.744. Son 9 digitos significativos y float32 solo da ~7.
+    buffers = [array("i") if cat else array("d") for cat in es_cat]
     sueltos = {}          # valores que no venian de la lista compartida
 
     with zf.open(ruta_rec) as fh:
@@ -161,7 +165,7 @@ def extraer(ruta_xlsx):
                     serie.iat[fila] = str(val)
             datos[col] = serie
         else:
-            datos[col] = pd.Series(np.asarray(buffers[j], dtype="float32"))
+            datos[col] = pd.Series(np.asarray(buffers[j], dtype="float64"))
         buffers[j] = None
 
     df = pd.DataFrame(datos)
@@ -170,7 +174,7 @@ def extraer(ruta_xlsx):
     df["FECHA"] = pd.to_datetime(df["FECHA"].astype(str), errors="coerce")
     for c in NUMERO:
         if c in df.columns:
-            df[c] = df[c].astype("float32")
+            df[c] = df[c].astype("float64")
     return df
 
 

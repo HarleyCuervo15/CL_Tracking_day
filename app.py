@@ -196,6 +196,14 @@ with st.sidebar.expander("Problemas"):
         st.cache_data.clear()
         st.rerun()
 
+st.sidebar.divider()
+bloques_sel = st.sidebar.multiselect(
+    "Tipo", BLOQUES, default=BLOQUES,
+    help="Móvil y Fijo ya incluyen el Mixto repartido. Este filtro SÍ es "
+         "compatible con las metas: el presupuesto está abierto por tipo.")
+if not bloques_sel:
+    bloques_sel = BLOQUES
+
 if hay_filtro:
     st.sidebar.warning("El costo no viene marcado por producto ni por flujo: esas "
                        "etiquetas solo existen en las filas de conversión. Al filtrar "
@@ -206,8 +214,35 @@ if diario.empty:
     st.error(f"No hay datos para {mes} en el área {area} con los filtros elegidos.")
     st.stop()
 
+diario = diario[diario["BLOQUE"].isin(bloques_sel)]
+if diario.empty:
+    st.error("Los filtros dejaron la selección vacía.")
+    st.stop()
+
 anio, mm = int(mes[:4]), int(mes[5:7])
 dias_mes = calendar.monthrange(anio, mm)[1]
+
+# Rango de fechas: por defecto del dia 1 al ultimo con datos
+tope = diario["FECHA"].max().date()
+piso = date(anio, mm, 1)
+fin_mes = date(anio, mm, dias_mes)
+rango = st.sidebar.date_input("Rango de fechas", value=(piso, tope),
+                              min_value=piso, max_value=fin_mes,
+                              help="Por defecto va del día 1 al último con datos. "
+                                   "Acórtalo para proyectar con el ritmo de los "
+                                   "últimos días en vez del promedio del mes.")
+if isinstance(rango, (list, tuple)) and len(rango) == 2:
+    f_ini, f_fin = rango
+else:
+    f_ini, f_fin = piso, tope
+
+diario = diario[(diario["FECHA"].dt.date >= f_ini) &
+                (diario["FECHA"].dt.date <= f_fin)]
+if diario.empty:
+    st.error(f"No hay datos entre {f_ini} y {f_fin}.")
+    st.stop()
+
+ventana_completa = (f_ini == piso and f_fin == tope)
 dias_reales = diario["FECHA"].nunique()
 
 dias_data = st.sidebar.number_input(
@@ -217,28 +252,44 @@ factor = dias_mes / dias_data
 st.sidebar.metric("Factor de proyección", f"{factor:.4f}",
                   help=f"{dias_mes} días del mes ÷ {dias_data} días con info")
 
-metas_mes = metas[metas["FECHA"].dt.strftime("%Y-%m") == mes]
+metas_mes = metas[(metas["FECHA"].dt.strftime("%Y-%m") == mes) &
+                  (metas["BLOQUE"].isin(bloques_sel))]
 if hay_filtro:
     metas_mes = metas_mes.iloc[0:0]
+# Meta del periodo elegido (los dias dentro del rango)
+metas_per = metas_mes[(metas_mes["FECHA"].dt.date >= f_ini) &
+                      (metas_mes["FECHA"].dt.date <= f_fin)]
 
 # ----------------------------------------------------------------
 # CALCULOS
 # ----------------------------------------------------------------
-mf = diario[diario["BLOQUE"] != "MIXTO"]          # Movil + Fijo = universo completo
-curva = (mf.groupby(mf["FECHA"].dt.day)[METRICAS].sum()
-         .reindex(range(1, dias_mes + 1), fill_value=0))
+# Si se piden los tres bloques, Mixto se excluye porque ya viene repartido
+# dentro de Movil y Fijo. Si se pide Mixto solo, se usa tal cual.
+if set(bloques_sel) == {"MIXTO"}:
+    mf, mfm = diario, metas_mes
+else:
+    mf = diario[diario["BLOQUE"] != "MIXTO"]
+    mfm = metas_mes[metas_mes["BLOQUE"] != "MIXTO"]
+    metas_per = metas_per[metas_per["BLOQUE"] != "MIXTO"]
 
-mfm = metas_mes[metas_mes["BLOQUE"] != "MIXTO"]
+dias_ventana = [d.day for d in pd.date_range(f_ini, f_fin)]
+curva = (mf.groupby(mf["FECHA"].dt.day, observed=True)[METRICAS].sum()
+         .reindex(dias_ventana, fill_value=0))
+
 if not mfm.empty:
     mcurva = (mfm.groupby(mfm["FECHA"].dt.day)[["META_COSTO", "META_LEADS"]].sum()
-              .reindex(range(1, dias_mes + 1), fill_value=0))
+              .reindex(dias_ventana, fill_value=0))
 else:
-    mcurva = pd.DataFrame(0.0, index=range(1, dias_mes + 1),
+    mcurva = pd.DataFrame(0.0, index=dias_ventana,
                           columns=["META_COSTO", "META_LEADS"])
 curva = curva.join(mcurva)
 
 real = curva[METRICAS].sum()
-meta_costo, meta_leads = curva["META_COSTO"].sum(), curva["META_LEADS"].sum()
+# Meta del periodo (para comparar contra lo real) y del mes (contra el proyectado)
+meta_costo = curva["META_COSTO"].sum()
+meta_leads = curva["META_LEADS"].sum()
+meta_mes_costo = mfm["META_COSTO"].sum()
+meta_mes_leads = mfm["META_LEADS"].sum()
 proy = real * factor
 
 
@@ -247,10 +298,18 @@ def div(a, b):
 
 
 st.title(f"Tracking y proyección · {mes}")
-st.caption(f"{area} · Móvil + Fijo (Mixto repartido al {split:.0%}) · "
-           f"{dias_data} de {dias_mes} días · "
-           f"último dato {diario['FECHA'].max().date()} · "
+etq_bloque = ("Móvil + Fijo" if set(bloques_sel) == set(BLOQUES)
+              else " + ".join(b.title() for b in bloques_sel))
+st.caption(f"{area} · {etq_bloque} (Mixto repartido al {split:.0%}) · "
+           f"del {f_ini:%d/%m} al {f_fin:%d/%m} · {dias_data} de {dias_mes} días · "
            f"proyección run-rate ×{factor:.4f}")
+
+if not ventana_completa:
+    st.info(f"**Ventana recortada** — estás viendo del {f_ini:%d/%m} al {f_fin:%d/%m}, "
+            f"no el mes completo. El proyectado asume que el resto del mes se comporta "
+            f"como esta ventana, así que sirve para preguntarte *¿y si el mes siguiera "
+            f"al ritmo de estos días?*. Las metas de las tarjetas son las de estos "
+            f"mismos días, no las del mes.")
 
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
          "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
@@ -285,23 +344,31 @@ if not alertas.empty:
 # ----------------------------------------------------------------
 st.subheader("Cierre proyectado")
 c = st.columns(3)
-cpl, cpl_meta = div(real["COSTO"], real["LEADS"]), div(meta_costo, meta_leads)
+cpl = div(real["COSTO"], real["LEADS"])
+cpl_meta = div(meta_costo, meta_leads)
 with c[0]:
-    p = div(proy["COSTO"], meta_costo)
-    sub = (f"Real hoy ${real['COSTO']:,.0f}" if hay_filtro else
-           f"Meta ${meta_costo:,.0f} · <span class='{pinta(p, True)}'>{p:.0%}</span><br>"
-           f"Real hoy ${real['COSTO']:,.0f}")
+    pp = div(proy["COSTO"], meta_mes_costo)          # proyectado vs meta del mes
+    pr = div(real["COSTO"], meta_costo)              # real vs meta del periodo
+    sub = (f"Real período ${real['COSTO']:,.0f}" if hay_filtro else
+           f"vs meta mes ${meta_mes_costo:,.0f} · "
+           f"<span class='{pinta(pp, True)}'>{pp:.0%}</span><br>"
+           f"Real período ${real['COSTO']:,.0f} · meta ${meta_costo:,.0f} · "
+           f"<span class='{pinta(pr, True)}'>{pr:.0%}</span>")
     tarjeta("COSTO", f"${proy['COSTO']:,.0f}", sub, "gasto")
 with c[1]:
-    p = div(proy["LEADS"], meta_leads)
-    sub = (f"Real hoy {real['LEADS']:,.0f}" if hay_filtro else
-           f"Meta {meta_leads:,.0f} · <span class='{pinta(p)}'>{p:.0%}</span><br>"
-           f"Real hoy {real['LEADS']:,.0f}")
+    pp = div(proy["LEADS"], meta_mes_leads)
+    pr = div(real["LEADS"], meta_leads)
+    sub = (f"Real período {real['LEADS']:,.0f}" if hay_filtro else
+           f"vs meta mes {meta_mes_leads:,.0f} · "
+           f"<span class='{pinta(pp)}'>{pp:.0%}</span><br>"
+           f"Real período {real['LEADS']:,.0f} · meta {meta_leads:,.0f} · "
+           f"<span class='{pinta(pr)}'>{pr:.0%}</span>")
     tarjeta("LEADS", f"{proy['LEADS']:,.0f}", sub)
 with c[2]:
-    p = div(cpl, cpl_meta)
+    pr = div(cpl, cpl_meta)
     sub = ("Con run-rate el CPL proyectado es el mismo" if hay_filtro else
-           f"Meta ${cpl_meta:,.0f} · <span class='{pinta(p, True)}'>{p:.0%}</span><br>"
+           f"Meta del período ${cpl_meta:,.0f} · "
+           f"<span class='{pinta(pr, True)}'>{pr:.0%}</span><br>"
            f"Con run-rate el CPL proyectado es el mismo")
     tarjeta("CPL", f"${cpl:,.0f}", sub, "gasto")
 
@@ -355,7 +422,7 @@ with t1:
     st.bar_chart(v.head(dias_data)[["Lead", "Q Neto", "Q Emi", "Q Ter"]], height=280)
 
 with t2:
-    for bloque in BLOQUES:
+    for bloque in bloques_sel:
         d = diario[diario["BLOQUE"] == bloque]
         mb = metas_mes[metas_mes["BLOQUE"] == bloque]
         canales = sorted(set(d["CANAL2"]) | set(mb["CANAL2"]))
