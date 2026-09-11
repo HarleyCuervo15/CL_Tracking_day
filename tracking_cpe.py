@@ -115,14 +115,24 @@ def buscar(carpeta, patron, etiqueta):
 # ----------------------------------------------------------------
 # 1. REAL
 # ----------------------------------------------------------------
-def construir_diario(df, mes, area=None, split=None, solo_con_costo=None):
+def construir_diario(df, mes, area=None, split=None, solo_con_costo=None,
+                     filtros=None):
+    """filtros: {"PRODUCTO": [...], "CANAL_SOLICITUD": [...]} o None.
+    Una lista vacia significa 'no filtrar por esa columna'."""
     area = AREA if area is None else area
     split = SPLIT_MIXTO if split is None else split
     solo = SOLO_CON_COSTO if solo_con_costo is None else solo_con_costo
-    df = df[(df["MES"] == mes) & (df["AREA"] == area)].copy()
+
+    df = df[(df["MES"] == mes) & (df["AREA"] == area)]
+    for col, valores in (filtros or {}).items():
+        if valores and col in df.columns:
+            df = df[df[col].astype(str).isin(valores)]
+    df = df.copy()
     if df.empty:
         return df
-    df["CANAL2"] = df["CANAL"].map(lambda c: NOMBRE_CANAL.get(c, str(c).title()))
+    df["CANAL2"] = df["CANAL"].astype(str).map(
+        lambda c: NOMBRE_CANAL.get(c, str(c).title()))
+    df["TIPO"] = df["TIPO"].astype(str)
 
     partes = []
     for bloque in ("MOVIL", "FIJO"):
@@ -146,7 +156,7 @@ def construir_diario(df, mes, area=None, split=None, solo_con_costo=None):
 
     diario = (
         pd.concat(partes, ignore_index=True)
-        .groupby(["FECHA", "BLOQUE", "CANAL2"], as_index=False)[METRICAS].sum()
+        .groupby(["FECHA", "BLOQUE", "CANAL2"], as_index=False, observed=True)[METRICAS].sum()
         .sort_values(["FECHA", "BLOQUE", "CANAL2"])
     )
     if solo:

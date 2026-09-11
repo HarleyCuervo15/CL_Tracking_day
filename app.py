@@ -147,9 +147,36 @@ solo_con_costo = st.sidebar.checkbox("Solo canales con inversión", value=False,
                                      help="Deja fuera Afiliados, TikTok y Sin clasificar, "
                                           "que generan ventas pero no tienen costo.")
 
-diario = construir_diario(base, mes, area, split, solo_con_costo)
+st.sidebar.divider()
+st.sidebar.caption("**Filtros** — el presupuesto no se abre por producto "
+                   "ni por plataforma, así que al filtrar se ocultan las metas.")
+
+_p = base[(base["MES"] == mes) & (base["AREA"] == area)]
+productos = sorted(x for x in _p["PRODUCTO"].astype(str).unique() if x and x != "nan")
+plataformas = sorted(x for x in _p["CANAL_SOLICITUD"].astype(str).unique()
+                     if x and x != "nan")
+
+flujos = sorted(x for x in _p["FLUJO"].astype(str).unique() if x and x != "nan")
+
+prod_sel = st.sidebar.multiselect("Producto", productos,
+                                  help="BAF, TV, VOZ, ALTA SIN_EQ... Vacío = todos")
+plat_sel = st.sidebar.multiselect("Plataforma", plataformas,
+                                  help="De dónde entró la solicitud (WEB / APP). "
+                                       "Vacío = todas")
+flujo_sel = st.sidebar.multiselect("Flujo", flujos,
+                                   help="Magento, C2C, WhatsApp. Vacío = todos")
+
+filtros = {"PRODUCTO": prod_sel, "CANAL_SOLICITUD": plat_sel, "FLUJO": flujo_sel}
+hay_filtro = bool(prod_sel or plat_sel or flujo_sel)
+
+if hay_filtro:
+    st.sidebar.warning("El costo no viene marcado por producto ni por flujo: esas "
+                       "etiquetas solo existen en las filas de conversión. Al filtrar "
+                       "verás volúmenes reales, pero el costo se va a cero.")
+
+diario = construir_diario(base, mes, area, split, solo_con_costo, filtros)
 if diario.empty:
-    st.error(f"No hay datos para {mes} en el área {area}.")
+    st.error(f"No hay datos para {mes} en el área {area} con los filtros elegidos.")
     st.stop()
 
 anio, mm = int(mes[:4]), int(mes[5:7])
@@ -164,6 +191,8 @@ st.sidebar.metric("Factor de proyección", f"{factor:.4f}",
                   help=f"{dias_mes} días del mes ÷ {dias_data} días con info")
 
 metas_mes = metas[metas["FECHA"].dt.strftime("%Y-%m") == mes]
+if hay_filtro:
+    metas_mes = metas_mes.iloc[0:0]
 
 # ----------------------------------------------------------------
 # CALCULOS
@@ -198,6 +227,21 @@ st.caption(f"{area} · Móvil + Fijo (Mixto repartido al {split:.0%}) · "
 
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
          "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+if hay_filtro:
+    partes = []
+    if prod_sel:
+        partes.append("producto: " + ", ".join(prod_sel))
+    if plat_sel:
+        partes.append("plataforma: " + ", ".join(plat_sel))
+    if flujo_sel:
+        partes.append("flujo: " + ", ".join(flujo_sel))
+    st.info(
+        f"**Vista filtrada** — {' · '.join(partes)}. "
+        f"Las metas quedan ocultas a propósito: el presupuesto solo está abierto "
+        f"por tipo y canal, no por producto ni plataforma. Repartirlo sería inventar "
+        f"un número. Aquí ves real y proyectado; para comparar contra meta, quita "
+        f"los filtros.")
+
 alertas = revisar_calidad(curva, dias_data, MESES[mm - 1])
 if not alertas.empty:
     st.warning(
@@ -218,22 +262,25 @@ if not alertas.empty:
 # ----------------------------------------------------------------
 st.subheader("Cierre proyectado")
 c = st.columns(3)
+cpl, cpl_meta = div(real["COSTO"], real["LEADS"]), div(meta_costo, meta_leads)
 with c[0]:
     p = div(proy["COSTO"], meta_costo)
-    tarjeta("COSTO", f"${proy['COSTO']:,.0f}",
-            f"Meta ${meta_costo:,.0f} · <span class='{pinta(p, True)}'>{p:.0%}</span><br>"
-            f"Real hoy ${real['COSTO']:,.0f}", "gasto")
+    sub = (f"Real hoy ${real['COSTO']:,.0f}" if hay_filtro else
+           f"Meta ${meta_costo:,.0f} · <span class='{pinta(p, True)}'>{p:.0%}</span><br>"
+           f"Real hoy ${real['COSTO']:,.0f}")
+    tarjeta("COSTO", f"${proy['COSTO']:,.0f}", sub, "gasto")
 with c[1]:
     p = div(proy["LEADS"], meta_leads)
-    tarjeta("LEADS", f"{proy['LEADS']:,.0f}",
-            f"Meta {meta_leads:,.0f} · <span class='{pinta(p)}'>{p:.0%}</span><br>"
-            f"Real hoy {real['LEADS']:,.0f}")
+    sub = (f"Real hoy {real['LEADS']:,.0f}" if hay_filtro else
+           f"Meta {meta_leads:,.0f} · <span class='{pinta(p)}'>{p:.0%}</span><br>"
+           f"Real hoy {real['LEADS']:,.0f}")
+    tarjeta("LEADS", f"{proy['LEADS']:,.0f}", sub)
 with c[2]:
-    cpl, cpl_meta = div(real["COSTO"], real["LEADS"]), div(meta_costo, meta_leads)
     p = div(cpl, cpl_meta)
-    tarjeta("CPL", f"${cpl:,.0f}",
-            f"Meta ${cpl_meta:,.0f} · <span class='{pinta(p, True)}'>{p:.0%}</span><br>"
-            f"Con run-rate el CPL proyectado es el mismo", "gasto")
+    sub = ("Con run-rate el CPL proyectado es el mismo" if hay_filtro else
+           f"Meta ${cpl_meta:,.0f} · <span class='{pinta(p, True)}'>{p:.0%}</span><br>"
+           f"Con run-rate el CPL proyectado es el mismo")
+    tarjeta("CPL", f"${cpl:,.0f}", sub, "gasto")
 
 st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 st.caption("Embudo — estas métricas no tienen meta en el presupuesto")

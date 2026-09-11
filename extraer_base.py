@@ -16,8 +16,10 @@ Uso:
 import re
 import sys
 import zipfile
+from array import array
 from xml.etree.ElementTree import iterparse
 
+import numpy as np
 import pandas as pd
 
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -25,10 +27,15 @@ NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 # Campos que realmente necesitamos para el tracking.
 CAMPOS_UTILES = [
     "MES", "SEMANA", "FECHA", "AREA", "TIPO", "CANAL", "CATEGORIA",
-    "CAMPANA", "PRODUCTO", "FAMILIA",
-    "IMPRESIONES", "CLICK", "LEADS", "COSTO",
-    "Q_BRUTO", "Q_NETO", "Q_EMI", "Q_TER",
+    "PRODUCTO", "FAMILIA", "CANAL_SOLICITUD", "FLUJO",
+    "LEADS", "COSTO", "Q_BRUTO", "Q_NETO", "Q_EMI", "Q_TER",
 ]
+
+# Columnas de texto: se guardan como categoria. Son pocos valores distintos
+# repetidos 600 mil veces, asi que pasa de ~770 MB a un tercio.
+TEXTO = ["MES", "SEMANA", "AREA", "TIPO", "CANAL", "CATEGORIA",
+         "PRODUCTO", "FAMILIA", "CANAL_SOLICITUD", "FLUJO"]
+NUMERO = ["LEADS", "COSTO", "Q_BRUTO", "Q_NETO", "Q_EMI", "Q_TER"]
 
 
 def leer_definicion(zf, ruta_def):
@@ -73,40 +80,54 @@ def _unescape(s):
 
 
 def leer_registros(zf, ruta_rec, nombres, shared, columnas):
-    """Recorre la cache en streaming y arma la lista de filas."""
+    """Recorre la cache en streaming y llena un array por columna.
+
+    Guardar codigos enteros en array.array en vez de listas de objetos
+    Python baja el pico de memoria de ~670 MB a ~150 MB, que es lo que
+    permite correr esto en Streamlit Cloud.
+    """
     quiero = [nombres.index(c) for c in columnas]
-    filas = []
+    es_cat = [bool(shared[p]) for p in quiero]
+
+    # 'i' = codigo de categoria (4 bytes)   'f' = numero (4 bytes)
+    buffers = [array("i") if cat else array("f") for cat in es_cat]
+    sueltos = {}          # valores que no venian de la lista compartida
 
     with zf.open(ruta_rec) as fh:
-        for evento, elem in iterparse(fh, events=("end",)):
+        n = 0
+        for _, elem in iterparse(fh, events=("end",)):
             if elem.tag != NS + "r":
                 continue
 
-            valores = []
+            crudos = []
             for hijo in elem:
                 etiqueta = hijo.tag[len(NS):]
                 v = hijo.get("v")
-                if etiqueta == "x":          # indice a la lista compartida
-                    valores.append(int(v))
-                elif etiqueta == "n":        # numero suelto
-                    valores.append(float(v) if v is not None else None)
-                elif etiqueta == "m":        # vacio
-                    valores.append(None)
-                else:                        # s, d, b, e
-                    valores.append(v)
-
-            fila = []
-            for pos in quiero:
-                bruto = valores[pos] if pos < len(valores) else None
-                if isinstance(bruto, int) and shared[pos]:
-                    fila.append(shared[pos][bruto] if bruto < len(shared[pos]) else None)
+                if etiqueta == "x":
+                    crudos.append(int(v))
+                elif etiqueta == "n":
+                    crudos.append(float(v) if v is not None else 0.0)
+                elif etiqueta == "m":
+                    crudos.append(None)
                 else:
-                    fila.append(bruto)
-            filas.append(fila)
+                    crudos.append(v)
 
+            for j, pos in enumerate(quiero):
+                val = crudos[pos] if pos < len(crudos) else None
+                if es_cat[j]:
+                    if isinstance(val, int):
+                        buffers[j].append(val)
+                    else:
+                        buffers[j].append(-1)
+                        if val is not None:
+                            sueltos.setdefault(j, {})[n] = val
+                else:
+                    buffers[j].append(0.0 if val is None else
+                                      (float(val) if not isinstance(val, str) else 0.0))
+            n += 1
             elem.clear()
 
-    return filas
+    return buffers, es_cat, sueltos, n
 
 
 def extraer(ruta_xlsx):
@@ -117,13 +138,34 @@ def extraer(ruta_xlsx):
 
         nombres, shared = leer_definicion(zf, ruta_def)
         columnas = [c for c in CAMPOS_UTILES if c in nombres]
-        filas = leer_registros(zf, ruta_rec, nombres, shared, columnas)
+        quiero = [nombres.index(c) for c in columnas]
+        buffers, es_cat, sueltos, n = leer_registros(zf, ruta_rec, nombres,
+                                                     shared, columnas)
 
-    df = pd.DataFrame(filas, columns=columnas)
-    df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
-    for c in ["IMPRESIONES", "CLICK", "LEADS", "COSTO", "Q_BRUTO", "Q_NETO", "Q_EMI", "Q_TER"]:
+    datos = {}
+    for j, col in enumerate(columnas):
+        if es_cat[j]:
+            cats = [("" if x is None else x) for x in shared[quiero[j]]]
+            serie = pd.Categorical.from_codes(np.asarray(buffers[j], dtype="int32"),
+                                              categories=pd.Index(cats).astype(str))
+            serie = pd.Series(serie)
+            if j in sueltos:                       # valores fuera de la lista
+                for fila, val in sueltos[j].items():
+                    serie = serie.cat.add_categories([str(val)]) \
+                        if str(val) not in serie.cat.categories else serie
+                    serie.iat[fila] = str(val)
+            datos[col] = serie
+        else:
+            datos[col] = pd.Series(np.asarray(buffers[j], dtype="float32"))
+        buffers[j] = None
+
+    df = pd.DataFrame(datos)
+    del datos, buffers
+
+    df["FECHA"] = pd.to_datetime(df["FECHA"].astype(str), errors="coerce")
+    for c in NUMERO:
         if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+            df[c] = df[c].astype("float32")
     return df
 
 
