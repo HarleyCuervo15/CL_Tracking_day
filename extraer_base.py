@@ -24,6 +24,11 @@ import pandas as pd
 
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 
+# Subir este numero cuando cambien CAMPOS_UTILES o la logica de extraccion.
+# La app lo usa como parte de la llave de cache: asi un cambio de codigo
+# invalida solito el DataFrame guardado, sin tener que limpiar nada a mano.
+VERSION = 2
+
 # Campos que realmente necesitamos para el tracking.
 CAMPOS_UTILES = [
     "MES", "SEMANA", "FECHA", "AREA", "TIPO", "CANAL", "CATEGORIA",

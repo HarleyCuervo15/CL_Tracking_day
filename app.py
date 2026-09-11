@@ -16,7 +16,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from extraer_base import extraer
+from extraer_base import VERSION as VERSION_EXTRACTOR, extraer
 from tracking_cpe import BLOQUES, METRICAS, construir_diario, construir_libro
 
 ARCHIVO_METAS = "metas.xlsx"
@@ -49,7 +49,9 @@ st.markdown("""
 # CARGA (con cache: la extraccion tarda ~30 s)
 # ----------------------------------------------------------------
 @st.cache_data(show_spinner=False, max_entries=3)
-def cargar_base(contenido: bytes) -> pd.DataFrame:
+def cargar_base(contenido: bytes, version: int) -> pd.DataFrame:
+    """version entra en la llave de cache aunque no se use adentro:
+    al subirla, el resultado viejo deja de valer automaticamente."""
     return extraer(io.BytesIO(contenido))
 
 
@@ -128,7 +130,7 @@ if subida is None:
     st.stop()
 
 with st.spinner("Leyendo la base que viene dentro de la maqueta (~30 s la primera vez)..."):
-    base = cargar_base(subida.getvalue())
+    base = cargar_base(subida.getvalue(), VERSION_EXTRACTOR)
 
 metas = cargar_metas(metas_subidas.getvalue() if metas_subidas else None)
 
@@ -179,10 +181,20 @@ for _col, _etq, _ayuda in DISPONIBLES:
 hay_filtro = any(filtros.values())
 
 if faltantes:
-    st.sidebar.error(
-        f"No disponibles: {', '.join(faltantes)}. El extraer_base.py del repositorio "
-        f"es una versión anterior que no trae esas columnas. Súbelo actualizado, "
-        f"reinicia la app y vuelve a subir la maqueta.")
+    st.sidebar.error(f"No disponibles: {', '.join(faltantes)}.")
+    with st.sidebar.expander("¿Por qué?"):
+        st.write(f"**Extractor en uso:** versión {VERSION_EXTRACTOR}")
+        st.write("**Columnas que trajo:**")
+        st.code(", ".join(base.columns))
+        st.write("Si arriba no aparecen CANAL_SOLICITUD ni FLUJO, el "
+                 "extraer_base.py del repositorio todavía es el viejo.")
+
+with st.sidebar.expander("Problemas"):
+    st.caption(f"Extractor versión {VERSION_EXTRACTOR} · "
+               f"{len(base):,} filas · {len(base.columns)} columnas")
+    if st.button("Limpiar caché y recargar"):
+        st.cache_data.clear()
+        st.rerun()
 
 if hay_filtro:
     st.sidebar.warning("El costo no viene marcado por producto ni por flujo: esas "
