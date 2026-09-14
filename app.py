@@ -391,7 +391,118 @@ for col, (campo, (nombre, costo_unit)) in zip(c, etiquetas.items()):
 # ----------------------------------------------------------------
 etq_hoy = "a hoy" if ventana_completa else "período"
 
-t1, t2, t3, t4 = st.tabs(["Curva diaria", "Maqueta", "Control", "Descargar"])
+t0, t1, t2, t3, t4 = st.tabs(["Resumen", "Curva diaria", "Maqueta",
+                              "Control", "Descargar"])
+
+with t0:
+    ETQ = {"MOVIL": "MÓVIL", "FIJO": "FIJO", "MIXTO": "MIXTO"}
+    usa = [b for b in bloques_sel if b != "MIXTO"] or bloques_sel
+
+    rb = (diario.groupby("BLOQUE", observed=True)[METRICAS].sum()
+          .reindex(bloques_sel, fill_value=0))
+    if metas_mes.empty:
+        mb = pd.DataFrame(0.0, index=bloques_sel,
+                          columns=["META_COSTO", "META_LEADS", "META_VENTAS"])
+    else:
+        mb = (metas_mes.groupby("BLOQUE")[["META_COSTO", "META_LEADS", "META_VENTAS"]]
+              .sum().reindex(bloques_sel, fill_value=0))
+
+    tot_r, tot_m = rb.loc[usa].sum(), mb.loc[usa].sum()
+    # Ventas: solo los bloques que sí tienen meta cargada
+    con_meta = [b for b in usa if mb.loc[b, "META_VENTAS"] > 0]
+    v_meta = mb.loc[con_meta, "META_VENTAS"].sum() if con_meta else 0.0
+    v_real = rb.loc[con_meta, "Q_TER"].sum() if con_meta else 0.0
+    c_costo_m = mb.loc[con_meta, "META_COSTO"].sum() if con_meta else 0.0
+    c_costo_r = rb.loc[con_meta, "COSTO"].sum() if con_meta else 0.0
+
+    st.markdown("#### RESUMEN GENERAL")
+    st.caption(f"Performance CL · corte {f_fin:%d/%m/%Y} · "
+               f"{' + '.join(ETQ[b] for b in usa)}")
+
+    fichas = [
+        ("INVERSIÓN", "$", tot_r["COSTO"], tot_m["META_COSTO"], True),
+        ("LEADS GENERADOS", "", tot_r["LEADS"], tot_m["META_LEADS"], False),
+        ("EMISIONES / NETOS", "", tot_r["Q_EMI"], 0.0, False),
+        ("VENTAS (solo con meta)", "", v_real, v_meta, False),
+    ]
+    cols = st.columns(5)
+    for col, (nombre, sig, r_, m_, gasto) in zip(cols, fichas):
+        with col:
+            p_ = div(r_ * factor, m_)
+            fmt = (lambda x: f"${x:,.0f}") if sig else (lambda x: f"{x:,.0f}")
+            meta_txt = (f"Meta mes {fmt(m_)}<br>"
+                        f"Cumpl. proy. <span class='{pinta(p_, gasto)}'>{p_:.0%}</span>"
+                        if m_ else "Sin meta en el presupuesto")
+            tarjeta(nombre, fmt(r_ * factor),
+                    f"Real corte {fmt(r_)}<br>{meta_txt}",
+                    "gasto" if gasto else ("suelta" if not m_ else ""))
+    with cols[4]:
+        cplm, cplp = div(tot_m["META_COSTO"], tot_m["META_LEADS"]), \
+            div(tot_r["COSTO"], tot_r["LEADS"])
+        cpam, cpap = div(c_costo_m, v_meta), div(c_costo_r, v_real)
+        tarjeta("COSTOS",
+                f"CPL ${cplp:,.0f}",
+                f"CPL meta ${cplm:,.0f} · "
+                f"<span class='{pinta(div(cplp, cplm), True)}'>"
+                f"{div(cplp, cplm):.0%}</span><br>"
+                f"CPA ${cpap:,.0f} · meta ${cpam:,.0f} · "
+                f"<span class='{pinta(div(cpap, cpam), True)}'>"
+                f"{div(cpap, cpam):.0%}</span>", "suelta")
+
+    st.markdown("##### Cumplimiento por producto")
+    filas = []
+    for b in bloques_sel + ["TOTAL"]:
+        r_ = tot_r if b == "TOTAL" else rb.loc[b]
+        m_ = tot_m if b == "TOTAL" else mb.loc[b]
+        vm = v_meta if b == "TOTAL" else m_["META_VENTAS"]
+        vr = v_real if b == "TOTAL" else r_["Q_TER"]
+        fila = {"Producto": ETQ.get(b, b)}
+        for etq, real_v, meta_v in [
+                ("Presupuesto", r_["COSTO"], m_["META_COSTO"]),
+                ("Leads", r_["LEADS"], m_["META_LEADS"]),
+                ("Emitidos", r_["Q_EMI"], 0.0),
+                ("Ventas", vr, vm)]:
+            fila[(etq, "Meta")] = meta_v
+            fila[(etq, "Proy.")] = real_v * factor
+            fila[(etq, "% cumpl.")] = div(real_v * factor, meta_v)
+        filas.append(fila)
+    tc = pd.DataFrame(filas).set_index("Producto")
+    tc.columns = pd.MultiIndex.from_tuples(tc.columns)
+    st.dataframe(tc.style.format(
+        {c: ("{:.0%}" if c[1] == "% cumpl." else
+             ("${:,.0f}" if c[0] == "Presupuesto" else "{:,.0f}"))
+         for c in tc.columns}), width="stretch")
+    st.caption("TOTAL = Móvil + Fijo. Mixto no se suma: ya viene repartido dentro "
+               "de los dos. Emisiones no tiene meta en el presupuesto, y la de "
+               "ventas solo viene cargada para algunos bloques.")
+
+    st.markdown("##### Costos")
+    filas = []
+    for b in bloques_sel + ["TOTAL"]:
+        r_ = tot_r if b == "TOTAL" else rb.loc[b]
+        m_ = tot_m if b == "TOTAL" else mb.loc[b]
+        cm = c_costo_m if b == "TOTAL" else m_["META_COSTO"]
+        vm = v_meta if b == "TOTAL" else m_["META_VENTAS"]
+        cr = c_costo_r if b == "TOTAL" else r_["COSTO"]
+        vr = v_real if b == "TOTAL" else r_["Q_TER"]
+        fila = {"Producto": ETQ.get(b, b)}
+        for etq, meta_v, real_v in [
+                ("CPL", div(m_["META_COSTO"], m_["META_LEADS"]),
+                 div(r_["COSTO"], r_["LEADS"])),
+                ("CPE", 0.0, div(r_["COSTO"], r_["Q_EMI"])),
+                ("CPA", div(cm, vm) if vm else 0.0, div(cr, vr) if vr else 0.0)]:
+            fila[(etq, "Meta")] = meta_v
+            fila[(etq, "Proy.")] = real_v
+            fila[(etq, "Var %")] = (real_v / meta_v - 1) if meta_v else 0.0
+        filas.append(fila)
+    tk = pd.DataFrame(filas).set_index("Producto")
+    tk.columns = pd.MultiIndex.from_tuples(tk.columns)
+    st.dataframe(tk.style.format(
+        {c: ("{:+.0%}" if c[1] == "Var %" else "${:,.0f}") for c in tk.columns}),
+        width="stretch")
+    st.caption("Con run-rate simple, el costo unitario proyectado es igual al actual: "
+               "costo y volumen se multiplican por el mismo factor.")
+
 
 with t1:
     v = curva.copy()
