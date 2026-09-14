@@ -387,6 +387,8 @@ for col, (campo, (nombre, costo_unit)) in zip(c, etiquetas.items()):
 # ----------------------------------------------------------------
 # PESTAÑAS
 # ----------------------------------------------------------------
+etq_hoy = "a hoy" if ventana_completa else "período"
+
 t1, t2, t3, t4 = st.tabs(["Curva diaria", "Maqueta", "Control", "Descargar"])
 
 with t1:
@@ -433,13 +435,28 @@ with t2:
         mt = (mb.groupby("CANAL2")[["META_COSTO", "META_LEADS"]].sum()
               .reindex(canales, fill_value=0))
 
+        # Meta acumulada hasta la fecha de corte (el PPTo es diario)
+        mh = (mb[(mb["FECHA"].dt.date >= f_ini) & (mb["FECHA"].dt.date <= f_fin)]
+              .groupby("CANAL2")[["META_COSTO", "META_LEADS"]].sum()
+              .reindex(canales, fill_value=0))
+
         tabla = pd.DataFrame(index=canales)
         tabla["Meta Costo"] = mt["META_COSTO"]
+        tabla[f"Meta Costo {etq_hoy}"] = mh["META_COSTO"]
         tabla["Real Costo"] = r["COSTO"]
+        tabla[f"% Costo {etq_hoy}"] = (r["COSTO"] /
+                                       mh["META_COSTO"].replace(0, pd.NA))
         tabla["Costo proy"] = r["COSTO"] * factor
+        tabla["% Costo cierre"] = (tabla["Costo proy"] /
+                                   mt["META_COSTO"].replace(0, pd.NA))
         tabla["Meta Leads"] = mt["META_LEADS"]
+        tabla[f"Meta Leads {etq_hoy}"] = mh["META_LEADS"]
         tabla["Real Leads"] = r["LEADS"]
+        tabla[f"% Leads {etq_hoy}"] = (r["LEADS"] /
+                                       mh["META_LEADS"].replace(0, pd.NA))
         tabla["Leads proy"] = r["LEADS"] * factor
+        tabla["% Leads cierre"] = (tabla["Leads proy"] /
+                                   mt["META_LEADS"].replace(0, pd.NA))
         tabla["CPL Meta"] = mt["META_COSTO"] / mt["META_LEADS"].replace(0, pd.NA)
         tabla["CPL"] = r["COSTO"] / r["LEADS"].replace(0, pd.NA)
         tabla["% Cumpl"] = tabla["CPL"] / tabla["CPL Meta"]
@@ -451,6 +468,13 @@ with t2:
         for a, b, dest in [("Meta Costo", "Meta Leads", "CPL Meta"),
                            ("Real Costo", "Real Leads", "CPL")]:
             tabla.loc["Total", dest] = div(tabla.loc["Total", a], tabla.loc["Total", b])
+        for num, den, dest in [
+                ("Real Costo", f"Meta Costo {etq_hoy}", f"% Costo {etq_hoy}"),
+                ("Costo proy", "Meta Costo", "% Costo cierre"),
+                ("Real Leads", f"Meta Leads {etq_hoy}", f"% Leads {etq_hoy}"),
+                ("Leads proy", "Meta Leads", "% Leads cierre")]:
+            tabla.loc["Total", dest] = div(tabla.loc["Total", num],
+                                           tabla.loc["Total", den])
         tabla.loc["Total", "% Cumpl"] = div(tabla.loc["Total", "CPL"],
                                             tabla.loc["Total", "CPL Meta"])
         for campo, (_, unit) in etiquetas.items():
@@ -460,7 +484,11 @@ with t2:
         st.markdown(f"### {bloque}")
         st.dataframe(tabla.style.format({
             "Meta Costo": "${:,.0f}", "Real Costo": "${:,.0f}", "Costo proy": "${:,.0f}",
+            f"Meta Costo {etq_hoy}": "${:,.0f}", f"% Costo {etq_hoy}": "{:.0%}",
+            "% Costo cierre": "{:.0%}",
             "Meta Leads": "{:,.0f}", "Real Leads": "{:,.0f}", "Leads proy": "{:,.0f}",
+            f"Meta Leads {etq_hoy}": "{:,.0f}", f"% Leads {etq_hoy}": "{:.0%}",
+            "% Leads cierre": "{:.0%}",
             "CPL Meta": "${:,.0f}", "CPL": "${:,.0f}", "% Cumpl": "{:.0%}",
             "Q Neto": "{:,.0f}", "CPL Neto": "${:,.0f}",
             "Q Emi": "{:,.0f}", "CPE": "${:,.0f}",

@@ -437,14 +437,19 @@ def escribir_control(ws, diario, metas):
 
 
 def escribir_maqueta(ws, diario, metas, fin_d, fin_m, mes, dias_mes):
-    titulo(ws, "A1", "N1", f"TRACKING Y PROYECCION A CIERRE · {mes}", AZUL)
+    titulo(ws, "A1", "R1", f"TRACKING Y PROYECCION A CIERRE · {mes}", AZUL)
     ws["A2"] = ("Proyeccion = Real acumulado / dias con informacion x dias del mes "
-                "(run-rate simple). Metas tomadas del PPTo. Parametros en PARAMETROS.")
+                "(run-rate simple). 'Meta a hoy' es la meta diaria acumulada hasta "
+                "la fecha de corte, para ver el pacing. Parametros en PARAMETROS.")
     ws["A2"].font = Font(name=FUENTE, size=9, italic=True)
 
-    cab = {"COSTOS": ["Canal 2", "Meta Costo", "Real Costo", "Costo proyectado"],
-           "LEADS": ["Canal 2", "Meta Leads", "Real Leads", "Leads Proyectados"],
+    cab = {"COSTOS": ["Canal 2", "Meta Costo mes", "Meta a hoy", "Real Costo",
+                      "% a hoy", "Costo proyectado"],
+           "LEADS": ["Canal 2", "Meta Leads mes", "Meta a hoy", "Real Leads",
+                     "% a hoy", "Leads Proyectados"],
            "CPL": ["Canal 2", "CPL Meta", "CPL", "% Cumplimiento"]}
+    ANCHO = {"COSTOS": 6, "LEADS": 6, "CPL": 4}
+    INICIO = {"COSTOS": 1, "LEADS": 8, "CPL": 15}     # columnas A, H, O
 
     fila = 4
     for bloque in BLOQUES:
@@ -453,62 +458,87 @@ def escribir_maqueta(ws, diario, metas, fin_d, fin_m, mes, dias_mes):
         if not canales:
             continue
 
-        for j, metrica in enumerate(["COSTOS", "LEADS", "CPL"]):
-            c0 = 1 + j * 5
-            li, lf = get_column_letter(c0), get_column_letter(c0 + 3)
+        for metrica in ("COSTOS", "LEADS", "CPL"):
+            c0, ancho = INICIO[metrica], ANCHO[metrica]
+            li, lf = get_column_letter(c0), get_column_letter(c0 + ancho - 1)
             titulo(ws, f"{li}{fila}", f"{lf}{fila}", f"{metrica} {bloque}",
                    AZUL if bloque == "MOVIL" else CELESTE)
             encabezado(ws, fila + 1, c0, cab[metrica])
+
+            # Letras de las columnas que necesita el bloque CPL
+            L_META_C, L_REAL_C = get_column_letter(2), get_column_letter(4)
+            L_META_L, L_REAL_L = get_column_letter(9), get_column_letter(11)
+            L_CPLM, L_CPL = get_column_letter(16), get_column_letter(17)
 
             for k, canal in enumerate(canales):
                 r = fila + 2 + k
                 cc = get_column_letter(c0)
                 ws.cell(row=r, column=c0, value=canal)
 
-                col = "D" if metrica != "LEADS" else "E"
-                real = (f'SUMIFS(DIARIO!${col}$2:${col}${fin_d},'
-                        f'DIARIO!$B$2:$B${fin_d},"{bloque}",'
-                        f'DIARIO!$C$2:$C${fin_d},${cc}{r})')
-                meta = (f'SUMIFS(METAS_DIA!${col}$2:${col}${fin_m},'
-                        f'METAS_DIA!$B$2:$B${fin_m},"{bloque}",'
-                        f'METAS_DIA!$C$2:$C${fin_m},${cc}{r})')
-
                 if metrica != "CPL":
-                    ws.cell(row=r, column=c0 + 1, value=f"={meta}")
-                    ws.cell(row=r, column=c0 + 2, value=f"={real}")
-                    ws.cell(row=r, column=c0 + 3,
-                            value=f"={get_column_letter(c0 + 2)}{r}*PARAMETROS!$B$7")
+                    col = "D" if metrica == "COSTOS" else "E"
+                    real = (f'SUMIFS(DIARIO!${col}$2:${col}${fin_d},'
+                            f'DIARIO!$B$2:$B${fin_d},"{bloque}",'
+                            f'DIARIO!$C$2:$C${fin_d},${cc}{r})')
+                    meta_mes = (f'SUMIFS(METAS_DIA!${col}$2:${col}${fin_m},'
+                                f'METAS_DIA!$B$2:$B${fin_m},"{bloque}",'
+                                f'METAS_DIA!$C$2:$C${fin_m},${cc}{r})')
+                    # Meta acumulada solo hasta la fecha de corte
+                    meta_hoy = (f'SUMIFS(METAS_DIA!${col}$2:${col}${fin_m},'
+                                f'METAS_DIA!$B$2:$B${fin_m},"{bloque}",'
+                                f'METAS_DIA!$C$2:$C${fin_m},${cc}{r},'
+                                f'METAS_DIA!$A$2:$A${fin_m},"<="&PARAMETROS!$B$9)')
+                    Lm, Lh, Lr = (get_column_letter(c0 + 1), get_column_letter(c0 + 2),
+                                  get_column_letter(c0 + 3))
+                    ws.cell(row=r, column=c0 + 1, value=f"={meta_mes}")
+                    ws.cell(row=r, column=c0 + 2, value=f"={meta_hoy}")
+                    ws.cell(row=r, column=c0 + 3, value=f"={real}")
+                    ws.cell(row=r, column=c0 + 4,
+                            value=f"=IFERROR({Lr}{r}/{Lh}{r},0)")
+                    ws.cell(row=r, column=c0 + 5,
+                            value=f"={Lr}{r}*PARAMETROS!$B$7")
                     fmt = "$#,##0" if metrica == "COSTOS" else "#,##0"
-                    for cx in (c0 + 1, c0 + 2, c0 + 3):
+                    for cx in (c0 + 1, c0 + 2, c0 + 3, c0 + 5):
                         ws.cell(row=r, column=cx).number_format = fmt
+                    ws.cell(row=r, column=c0 + 4).number_format = "0%"
                 else:
-                    ws.cell(row=r, column=c0 + 1, value=f"=IFERROR(B{r}/G{r},0)")
-                    ws.cell(row=r, column=c0 + 2, value=f"=IFERROR(C{r}/H{r},0)")
-                    ws.cell(row=r, column=c0 + 3, value=f"=IFERROR(M{r}/L{r},0)")
+                    ws.cell(row=r, column=c0 + 1,
+                            value=f"=IFERROR({L_META_C}{r}/{L_META_L}{r},0)")
+                    ws.cell(row=r, column=c0 + 2,
+                            value=f"=IFERROR({L_REAL_C}{r}/{L_REAL_L}{r},0)")
+                    ws.cell(row=r, column=c0 + 3,
+                            value=f"=IFERROR({L_CPL}{r}/{L_CPLM}{r},0)")
                     ws.cell(row=r, column=c0 + 1).number_format = "$#,##0"
                     ws.cell(row=r, column=c0 + 2).number_format = "$#,##0"
                     ws.cell(row=r, column=c0 + 3).number_format = "0%"
 
-                for cx in range(c0, c0 + 4):
+                for cx in range(c0, c0 + ancho):
                     ws.cell(row=r, column=cx).font = Font(name=FUENTE, size=9)
 
             rt = fila + 2 + len(canales)
-            p, u = fila + 2, fila + 1 + len(canales)
+            pp, uu = fila + 2, fila + 1 + len(canales)
             ws.cell(row=rt, column=c0, value="Total")
             if metrica != "CPL":
-                for cx in (c0 + 1, c0 + 2, c0 + 3):
+                fmt = "$#,##0" if metrica == "COSTOS" else "#,##0"
+                for cx in (c0 + 1, c0 + 2, c0 + 3, c0 + 5):
                     L = get_column_letter(cx)
-                    ws.cell(row=rt, column=cx, value=f"=SUM({L}{p}:{L}{u})")
-                    ws.cell(row=rt, column=cx).number_format = (
-                        "$#,##0" if metrica == "COSTOS" else "#,##0")
+                    ws.cell(row=rt, column=cx, value=f"=SUM({L}{pp}:{L}{uu})")
+                    ws.cell(row=rt, column=cx).number_format = fmt
+                Lh, Lr = get_column_letter(c0 + 2), get_column_letter(c0 + 3)
+                ws.cell(row=rt, column=c0 + 4,
+                        value=f"=IFERROR({Lr}{rt}/{Lh}{rt},0)")
+                ws.cell(row=rt, column=c0 + 4).number_format = "0%"
             else:
-                ws.cell(row=rt, column=c0 + 1, value=f"=IFERROR(B{rt}/G{rt},0)")
-                ws.cell(row=rt, column=c0 + 2, value=f"=IFERROR(C{rt}/H{rt},0)")
-                ws.cell(row=rt, column=c0 + 3, value=f"=IFERROR(M{rt}/L{rt},0)")
+                ws.cell(row=rt, column=c0 + 1,
+                        value=f"=IFERROR({L_META_C}{rt}/{L_META_L}{rt},0)")
+                ws.cell(row=rt, column=c0 + 2,
+                        value=f"=IFERROR({L_REAL_C}{rt}/{L_REAL_L}{rt},0)")
+                ws.cell(row=rt, column=c0 + 3,
+                        value=f"=IFERROR({L_CPL}{rt}/{L_CPLM}{rt},0)")
                 ws.cell(row=rt, column=c0 + 1).number_format = "$#,##0"
                 ws.cell(row=rt, column=c0 + 2).number_format = "$#,##0"
                 ws.cell(row=rt, column=c0 + 3).number_format = "0%"
-            for cx in range(c0, c0 + 4):
+            for cx in range(c0, c0 + ancho):
                 c = ws.cell(row=rt, column=cx)
                 c.font = Font(name=FUENTE, bold=True, size=9)
                 c.border = Border(top=Side(style="thin"))
@@ -590,12 +620,13 @@ def escribir_maqueta(ws, diario, metas, fin_d, fin_m, mes, dias_mes):
         for cx in range(1, 5):
             ws.cell(row=r, column=cx).font = Font(name=FUENTE, size=9)
 
-    for j in range(3):
-        c0 = 1 + j * 5
-        ws.column_dimensions[get_column_letter(c0)].width = 24
-        for k in (1, 2, 3):
-            ws.column_dimensions[get_column_letter(c0 + k)].width = 17
-        ws.column_dimensions[get_column_letter(c0 + 4)].width = 2
+    for metrica, c0 in (("COSTOS", 1), ("LEADS", 8), ("CPL", 15)):
+        ancho = 6 if metrica != "CPL" else 4
+        ws.column_dimensions[get_column_letter(c0)].width = 22
+        for k in range(1, ancho):
+            ws.column_dimensions[get_column_letter(c0 + k)].width = 16
+        if metrica != "CPL":
+            ws.column_dimensions[get_column_letter(c0 + ancho)].width = 2
 
 
 # ----------------------------------------------------------------
