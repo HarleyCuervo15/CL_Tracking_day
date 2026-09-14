@@ -255,9 +255,14 @@ def construir_libro(diario, metas, mes, salida):
 
     # -------- METAS_DIA --------
     wm = wb.create_sheet("METAS_DIA")
-    fin_m = volcar(wm, metas, ["FECHA", "BLOQUE", "CANAL 2", "META COSTO", "META LEADS"],
-                   ["yyyy-mm-dd", "@", "@", "$#,##0", "#,##0"])
-    for col, w in zip("ABCDE", (12, 10, 20, 16, 12)):
+    if "META_VENTAS" not in metas.columns:
+        metas = metas.assign(META_VENTAS=0.0)
+    metas = metas[["FECHA", "BLOQUE", "CANAL2", "META_COSTO", "META_LEADS",
+                   "META_VENTAS"]]
+    fin_m = volcar(wm, metas, ["FECHA", "BLOQUE", "CANAL 2", "META COSTO",
+                               "META LEADS", "META VENTAS"],
+                   ["yyyy-mm-dd", "@", "@", "$#,##0", "#,##0", "#,##0"])
+    for col, w in zip("ABCDEF", (12, 10, 20, 16, 12, 13)):
         wm.column_dimensions[col].width = w
 
     # -------- PARAMETROS --------
@@ -292,12 +297,18 @@ def construir_libro(diario, metas, mes, salida):
     wk = wb.create_sheet("CONTROL")
     escribir_control(wk, diario, metas)
 
+    # -------- RESUMEN --------
+    wr = wb.create_sheet("RESUMEN")
+    escribir_resumen(wr, diario, metas, fin_d, fin_m, mes)
+
     # -------- MAQUETA --------
     wq = wb.create_sheet("MAQUETA")
     escribir_maqueta(wq, diario, metas, fin_d, fin_m, mes, dias_mes)
 
-    wb.move_sheet("MAQUETA", offset=-5)
-    wb.move_sheet("CURVA", offset=-3)
+    orden = ["RESUMEN", "MAQUETA", "CURVA", "CONTROL", "PARAMETROS",
+             "DIARIO", "METAS_DIA"]
+    wb._sheets = ([wb[n] for n in orden if n in wb.sheetnames] +
+                  [h for h in wb._sheets if h.title not in orden])
     wb.save(salida)
     return dias_data, dias_mes
 
@@ -397,6 +408,295 @@ def escribir_curva(ws, mes, anio, mm, dias_mes, fin_d, fin_m):
     for col in "BCDEFGHIJKLMNOP":
         ws.column_dimensions[col].width = 14
     ws.freeze_panes = "B3"
+
+
+def escribir_resumen(ws, diario, metas, fin_d, fin_m, mes):
+    """Hoja RESUMEN GENERAL: 5 tarjetas arriba y dos tablas abajo.
+    Todo son formulas contra DIARIO y METAS_DIA, asi que se recalcula
+    al cambiar los parametros."""
+    MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+             "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+    nombre_mes = f"{MESES[int(mes[5:7]) - 1]} {mes[:4]}"
+
+    # ---- helpers de formula ----
+    def real(col, bloques):
+        col = COL.get(col, col)          # acepta "COSTO" o directamente "D"
+        if len(bloques) == 1:
+            return (f'SUMIFS(DIARIO!${col}$2:${col}${fin_d},'
+                    f'DIARIO!$B$2:$B${fin_d},"{bloques[0]}")')
+        partes = [f'SUMIFS(DIARIO!${col}$2:${col}${fin_d},'
+                  f'DIARIO!$B$2:$B${fin_d},"{b}")' for b in bloques]
+        return "(" + "+".join(partes) + ")"
+
+    def meta(col, bloques):
+        col = MCOL.get(col, col)         # acepta "COSTO" o directamente "D"
+        partes = [f'SUMIFS(METAS_DIA!${col}$2:${col}${fin_m},'
+                  f'METAS_DIA!$B$2:$B${fin_m},"{b}")' for b in bloques]
+        return partes[0] if len(partes) == 1 else "(" + "+".join(partes) + ")"
+
+    MF = ["MOVIL", "FIJO"]          # el universo: Mixto ya viene repartido
+    COL = {"COSTO": "D", "LEADS": "E", "Q_NETO": "F", "Q_EMI": "G", "Q_TER": "H"}
+    MCOL = {"COSTO": "D", "LEADS": "E", "VENTAS": "F"}
+
+    # ---- encabezado ----
+    ws.merge_cells("A1:F1")
+    ws["A1"] = "RESUMEN GENERAL"
+    ws["A1"].font = Font(name=FUENTE, bold=True, size=20, color="1F3864")
+    ws.merge_cells("A2:F2")
+    ws["A2"] = f"Performance CL | Seguimiento · {nombre_mes}"
+    ws["A2"].font = Font(name=FUENTE, size=10, color="7F7F7F")
+    ws.merge_cells("J1:M1")
+    ws["J1"] = '="Fecha de evaluación: "&TEXT(PARAMETROS!$B$9,"DD/MM/YYYY")'
+    ws["J1"].font = Font(name=FUENTE, size=10, color="7F7F7F")
+    ws["J1"].alignment = Alignment(horizontal="right")
+
+    # Filas donde quedara la tabla de cumplimiento (se escribe mas abajo,
+    # pero las formulas pueden apuntar a ella sin problema).
+    fila_t = 4
+    f0_tab = fila_t + 7
+    fh_tab = f0_tab + 1
+    r_mov, r_fij = fh_tab + 2, fh_tab + 3          # MOVIL y FIJO
+    # Columnas del grupo Ventas y del grupo Presupuesto en esa tabla
+    V_META, V_PROY = "K", "L"
+    P_META, P_PROY = "B", "C"
+    rango_vm = f"${V_META}${r_mov}:${V_META}${r_fij}"
+    rango_vp = f"${V_PROY}${r_mov}:${V_PROY}${r_fij}"
+    rango_pm = f"${P_META}${r_mov}:${P_META}${r_fij}"
+    rango_pp = f"${P_PROY}${r_mov}:${P_PROY}${r_fij}"
+    # Solo los bloques con meta de ventas cargada
+    v_real = f'SUMIF({rango_vm},">0",{rango_vp})/PARAMETROS!$B$7'
+    v_meta = f'SUMIF({rango_vm},">0",{rango_vm})'
+    v_proy = f'SUMIF({rango_vm},">0",{rango_vp})'
+
+    # ---- 5 tarjetas ----
+    tarjetas = [
+        ("INVERSIÓN", [
+            ("Real corte", f"={real('COSTO', MF)}", "$#,##0"),
+            ("Meta mes", f"={meta('COSTO', MF)}", "$#,##0"),
+            ("Proy. cierre", f"={real('COSTO', MF)}*PARAMETROS!$B$7", "$#,##0"),
+            ("Cumpl. proy.", None, "0%")]),
+        ("LEADS GENERADOS", [
+            ("Real corte", f"={real('LEADS', MF)}", "#,##0"),
+            ("Meta mes", f"={meta('LEADS', MF)}", "#,##0"),
+            ("Proy. cierre", f"={real('LEADS', MF)}*PARAMETROS!$B$7", "#,##0"),
+            ("Cumpl. proy.", None, "0%")]),
+        ("EMISIONES / NETOS", [
+            ("Real corte", f"={real('Q_EMI', MF)}", "#,##0"),
+            ("Meta mes", "0", "#,##0"),
+            ("Proy. cierre", f"={real('Q_EMI', MF)}*PARAMETROS!$B$7", "#,##0"),
+            ("Cumpl. proy.", None, "0%")]),
+        ("VENTAS (solo con meta)", [
+            ("Real corte", f"={v_real}", "#,##0"),
+            ("Meta mes", f"={v_meta}", "#,##0"),
+            ("Proy. cierre", f"={v_proy}", "#,##0"),
+            ("Cumpl. proy.", None, "0%")]),
+    ]
+
+    for i, (nombre, lineas) in enumerate(tarjetas):
+        c0 = 1 + i * 3
+        li, lf = get_column_letter(c0), get_column_letter(c0 + 2)
+        ws.merge_cells(f"{li}{fila_t}:{lf}{fila_t}")
+        c = ws[f"{li}{fila_t}"]
+        c.value = nombre
+        c.font = Font(name=FUENTE, bold=True, size=11, color="1F3864")
+        c.fill = PatternFill("solid", fgColor="DEEAF6")
+        c.border = Border(left=Side(style="thick", color="1F3864"))
+        for j, (etq, formula, fmt) in enumerate(lineas):
+            r = fila_t + 1 + j
+            ws.cell(row=r, column=c0, value=etq).font = Font(name=FUENTE, size=9)
+            cel = ws.cell(row=r, column=c0 + 1)
+            if formula is None:      # cumplimiento = proyectado / meta
+                Lp = get_column_letter(c0 + 1)
+                cel.value = f"=IFERROR({Lp}{r - 1}/{Lp}{r - 2},0)"
+            else:
+                cel.value = formula
+            cel.number_format = fmt
+            cel.font = Font(name=FUENTE, bold=(formula is None), size=9)
+            for cx in (c0, c0 + 1, c0 + 2):
+                ws.cell(row=r, column=cx).fill = PatternFill("solid", fgColor="F2F7FC")
+            ws.cell(row=r, column=c0).border = Border(
+                left=Side(style="thick", color="1F3864"))
+
+    # Tarjeta de costos
+    c0 = 13
+    li, lf = get_column_letter(c0), get_column_letter(c0 + 2)
+    ws.merge_cells(f"{li}{fila_t}:{lf}{fila_t}")
+    c = ws[f"{li}{fila_t}"]
+    c.value = "COSTOS"
+    c.font = Font(name=FUENTE, bold=True, size=11, color="843C0C")
+    c.fill = PatternFill("solid", fgColor="FFF2CC")
+    c.border = Border(left=Side(style="thick", color="FFC000"))
+    costos = [("CPL Meta", f"=IFERROR({meta('COSTO', MF)}/{meta('LEADS', MF)},0)"),
+              ("CPL Proy.", f"=IFERROR({real('COSTO', MF)}/{real('LEADS', MF)},0)"),
+              ("CPA Meta", f'=IFERROR(SUMIF({rango_vm},">0",{rango_pm})/{v_meta},0)'),
+              ("CPA Proy.", f'=IFERROR(SUMIF({rango_vm},">0",{rango_pp})/{v_proy},0)')]
+    for j, (etq, formula) in enumerate(costos):
+        r = fila_t + 1 + j
+        ws.cell(row=r, column=c0, value=etq).font = Font(name=FUENTE, size=9)
+        cel = ws.cell(row=r, column=c0 + 1, value=formula)
+        cel.number_format = "$#,##0"
+        cel.font = Font(name=FUENTE, size=9)
+        for cx in (c0, c0 + 1, c0 + 2):
+            ws.cell(row=r, column=cx).fill = PatternFill("solid", fgColor="FFFBF0")
+        ws.cell(row=r, column=c0).border = Border(
+            left=Side(style="thick", color="FFC000"))
+
+    # ---- tabla: cumplimiento por producto ----
+    f0 = f0_tab
+    ws[f"A{f0}"] = "Cumplimiento por producto"
+    ws[f"A{f0}"].font = Font(name=FUENTE, bold=True, size=12, color="1F3864",
+                             underline="single")
+
+    grupos = [("Presupuesto", "COSTO", "COSTO", "$#,##0"),
+              ("Leads", "LEADS", "LEADS", "#,##0"),
+              ("Emitidos", "Q_EMI", None, "#,##0"),
+              ("Ventas", "Q_TER", "VENTAS", "#,##0")]
+
+    fh = fh_tab
+    ws.cell(row=fh, column=1, value="Producto")
+    for g, (nombre, _, _, _) in enumerate(grupos):
+        c0 = 2 + g * 3
+        li, lf = get_column_letter(c0), get_column_letter(c0 + 2)
+        ws.merge_cells(f"{li}{fh}:{lf}{fh}")
+        cel = ws[f"{li}{fh}"]
+        cel.value = nombre
+        cel.font = Font(name=FUENTE, bold=True, size=10, color="FFFFFF")
+        cel.fill = PatternFill("solid", fgColor="1F3864")
+        cel.alignment = Alignment(horizontal="center")
+    ws.cell(row=fh, column=1).font = Font(name=FUENTE, bold=True, size=10,
+                                          color="FFFFFF")
+    ws.cell(row=fh, column=1).fill = PatternFill("solid", fgColor="1F3864")
+
+    for g in range(len(grupos)):
+        for k, sub in enumerate(("Meta", "Proy.", "% cumpl.")):
+            cel = ws.cell(row=fh + 1, column=2 + g * 3 + k, value=sub)
+            cel.font = Font(name=FUENTE, bold=True, size=8)
+            cel.fill = PatternFill("solid", fgColor="DEEAF6")
+            cel.alignment = Alignment(horizontal="center")
+
+    etiquetas = {"MOVIL": "MÓVIL", "FIJO": "FIJO", "MIXTO": "MIXTO"}
+    for i, bloque in enumerate(BLOQUES):
+        r = fh + 2 + i
+        ws.cell(row=r, column=1, value=etiquetas[bloque]).font = Font(
+            name=FUENTE, bold=True, size=9)
+        for g, (_, campo_real, campo_meta, fmt) in enumerate(grupos):
+            c0 = 2 + g * 3
+            Lm, Lp = get_column_letter(c0), get_column_letter(c0 + 1)
+            ws.cell(row=r, column=c0,
+                    value=(f"={meta(MCOL[campo_meta], [bloque])}"
+                           if campo_meta else "0"))
+            ws.cell(row=r, column=c0 + 1,
+                    value=f"={real(COL[campo_real], [bloque])}*PARAMETROS!$B$7")
+            ws.cell(row=r, column=c0 + 2,
+                    value=f"=IFERROR({Lp}{r}/{Lm}{r},0)")
+            ws.cell(row=r, column=c0).number_format = fmt
+            ws.cell(row=r, column=c0 + 1).number_format = fmt
+            ws.cell(row=r, column=c0 + 2).number_format = "0%"
+        for cx in range(2, 14):
+            ws.cell(row=r, column=cx).font = Font(name=FUENTE, size=9)
+
+    # Total Movil + Fijo
+    rt = fh + 2 + len(BLOQUES)
+    ws.cell(row=rt, column=1, value="TOTAL").font = Font(name=FUENTE, bold=True, size=9)
+    for g, (_, campo_real, campo_meta, fmt) in enumerate(grupos):
+        c0 = 2 + g * 3
+        Lm, Lp = get_column_letter(c0), get_column_letter(c0 + 1)
+        if campo_meta == "VENTAS":
+            # Solo los bloques con meta cargada, para no comparar las ventas
+            # de todos contra la meta de uno solo.
+            ws.cell(row=rt, column=c0, value=f"={v_meta}")
+            ws.cell(row=rt, column=c0 + 1, value=f"={v_proy}")
+        else:
+            ws.cell(row=rt, column=c0,
+                    value=f"={meta(MCOL[campo_meta], MF)}" if campo_meta else "0")
+            ws.cell(row=rt, column=c0 + 1,
+                    value=f"={real(COL[campo_real], MF)}*PARAMETROS!$B$7")
+        ws.cell(row=rt, column=c0 + 2, value=f"=IFERROR({Lp}{rt}/{Lm}{rt},0)")
+        ws.cell(row=rt, column=c0).number_format = fmt
+        ws.cell(row=rt, column=c0 + 1).number_format = fmt
+        ws.cell(row=rt, column=c0 + 2).number_format = "0%"
+    for cx in range(1, 14):
+        c = ws.cell(row=rt, column=cx)
+        c.font = Font(name=FUENTE, bold=True, size=9)
+        c.border = Border(top=Side(style="thin"))
+    ws.cell(row=rt + 1, column=1,
+            value="TOTAL = Móvil + Fijo. Mixto no se suma: ya viene repartido "
+                  "dentro de los dos.").font = Font(name=FUENTE, size=8,
+                                                    italic=True, color="7F7F7F")
+
+    # ---- tabla: costos unitarios ----
+    f1 = rt + 3
+    ws[f"A{f1}"] = "Costos"
+    ws[f"A{f1}"].font = Font(name=FUENTE, bold=True, size=12, color="C00000",
+                             underline="single")
+
+    unit = [("CPL", "LEADS", "LEADS"), ("CPE", "Q_EMI", None),
+            ("CPA", "Q_TER", "VENTAS")]
+    fh1 = f1 + 1
+    cel = ws.cell(row=fh1, column=1, value="Producto")
+    cel.font = Font(name=FUENTE, bold=True, size=10, color="FFFFFF")
+    cel.fill = PatternFill("solid", fgColor="1F3864")
+    for g, (nombre, _, _) in enumerate(unit):
+        c0 = 2 + g * 3
+        li, lf = get_column_letter(c0), get_column_letter(c0 + 2)
+        ws.merge_cells(f"{li}{fh1}:{lf}{fh1}")
+        cel = ws[f"{li}{fh1}"]
+        cel.value = nombre
+        cel.font = Font(name=FUENTE, bold=True, size=10, color="FFFFFF")
+        cel.fill = PatternFill("solid", fgColor="1F3864")
+        cel.alignment = Alignment(horizontal="center")
+        for k, sub in enumerate(("Meta", "Proy.", "Var %")):
+            c2 = ws.cell(row=fh1 + 1, column=c0 + k, value=sub)
+            c2.font = Font(name=FUENTE, bold=True, size=8)
+            c2.fill = PatternFill("solid", fgColor="FCE4E4")
+            c2.alignment = Alignment(horizontal="center")
+
+    for i, bloque in enumerate(list(BLOQUES) + ["TOTAL"]):
+        r = fh1 + 2 + i
+        bl = MF if bloque == "TOTAL" else [bloque]
+        ws.cell(row=r, column=1, value=etiquetas.get(bloque, bloque)).font = Font(
+            name=FUENTE, bold=True, size=9)
+        for g, (_, campo_real, campo_meta) in enumerate(unit):
+            c0 = 2 + g * 3
+            Lm, Lp = get_column_letter(c0), get_column_letter(c0 + 1)
+            if campo_meta == "VENTAS" and bloque == "TOTAL":
+                # Solo los bloques con meta de ventas, si no se compara el
+                # costo de todos contra las ventas meta de uno solo.
+                ws.cell(row=r, column=c0,
+                        value=f'=IFERROR(SUMIF({rango_vm},">0",{rango_pm})/{v_meta},0)')
+                ws.cell(row=r, column=c0 + 1,
+                        value=f'=IFERROR(SUMIF({rango_vm},">0",{rango_pp})/{v_proy},0)')
+            else:
+                ws.cell(row=r, column=c0,
+                        value=(f"=IFERROR({meta('D', bl)}/"
+                               f"{meta(MCOL[campo_meta], bl)},0)"
+                               if campo_meta else "0"))
+                ws.cell(row=r, column=c0 + 1,
+                        value=f"=IFERROR({real('D', bl)}/"
+                              f"{real(COL[campo_real], bl)},0)")
+            ws.cell(row=r, column=c0 + 2,
+                    value=f"=IFERROR({Lp}{r}/{Lm}{r}-1,0)")
+            ws.cell(row=r, column=c0).number_format = "$#,##0"
+            ws.cell(row=r, column=c0 + 1).number_format = "$#,##0"
+            ws.cell(row=r, column=c0 + 2).number_format = "+0%;-0%;0%"
+            for k in range(3):
+                ws.cell(row=r, column=c0 + k).font = Font(
+                    name=FUENTE, bold=(bloque == "TOTAL"), size=9)
+        if bloque == "TOTAL":
+            for cx in range(1, 11):
+                ws.cell(row=r, column=cx).border = Border(top=Side(style="thin"))
+
+    ws.cell(row=fh1 + 2 + len(BLOQUES) + 2, column=1,
+            value="Emisiones y CPE no tienen meta en el presupuesto: quedan en 0 a "
+                  "propósito. La meta de ventas solo viene cargada para Fijo, así que "
+                  "la tarjeta de VENTAS y el CPA del TOTAL se calculan únicamente "
+                  "sobre los bloques que sí tienen meta.").font = Font(
+        name=FUENTE, size=8, italic=True, color="C00000")
+
+    ws.column_dimensions["A"].width = 18
+    for cx in range(2, 17):
+        ws.column_dimensions[get_column_letter(cx)].width = 13
+    ws.sheet_view.showGridLines = False
 
 
 def escribir_control(ws, diario, metas):

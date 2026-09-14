@@ -59,12 +59,14 @@ def cargar_base(contenido: bytes, version: int) -> pd.DataFrame:
 def cargar_metas(contenido: bytes | None) -> pd.DataFrame:
     if contenido is None:
         if not os.path.exists(ARCHIVO_METAS):
-            return pd.DataFrame(columns=["FECHA", "BLOQUE", "CANAL2",
-                                         "META_COSTO", "META_LEADS"])
+            return pd.DataFrame(columns=["FECHA", "BLOQUE", "CANAL2", "META_COSTO",
+                                         "META_LEADS", "META_VENTAS"])
         m = pd.read_excel(ARCHIVO_METAS)
     else:
         m = pd.read_excel(io.BytesIO(contenido))
     m["FECHA"] = pd.to_datetime(m["FECHA"])
+    if "META_VENTAS" not in m.columns:
+        m["META_VENTAS"] = 0.0
     return m
 
 
