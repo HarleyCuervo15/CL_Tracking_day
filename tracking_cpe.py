@@ -199,6 +199,38 @@ def leer_metas(ruta_ppto, mes):
     return metas[metas["BLOQUE"].isin(BLOQUES)]
 
 
+def universo(split=None):
+    """Bloques que suman el total sin contar dos veces.
+    Si Mixto se reparte, ya esta dentro de Movil y Fijo. Si no, va aparte
+    y hay que sumarlo."""
+    split = SPLIT_MIXTO if split is None else split
+    return ["MOVIL", "FIJO"] if split else ["MOVIL", "FIJO", "MIXTO"]
+
+
+def repartir_metas(metas, split=None):
+    """Mixto queda entero en su bloque y ademas se reparte a Movil y Fijo,
+    exactamente igual que el real. Con split=0 los bloques quedan puros:
+    Movil solo movil, Fijo solo fijo, y Mixto aparte."""
+    split = SPLIT_MIXTO if split is None else split
+    if metas is None or metas.empty:
+        return metas
+    cols = [c for c in ("META_COSTO", "META_LEADS", "META_VENTAS")
+            if c in metas.columns]
+
+    mixto = metas[metas["BLOQUE"] == "MIXTO"]
+    piezas = [metas]
+    if not mixto.empty and split:
+        for destino in ("MOVIL", "FIJO"):
+            t = mixto.copy()
+            t["BLOQUE"] = destino
+            t[cols] = t[cols] * split
+            piezas.append(t)
+
+    return (pd.concat(piezas, ignore_index=True)
+            .groupby(["FECHA", "BLOQUE", "CANAL2"], as_index=False)[cols].sum()
+            .sort_values(["FECHA", "BLOQUE", "CANAL2"]))
+
+
 # ----------------------------------------------------------------
 # 3. LIBRO
 # ----------------------------------------------------------------
@@ -235,7 +267,9 @@ def volcar(ws, df, columnas, formatos, fila_ini=2):
     return len(df) + fila_ini - 1
 
 
-def construir_libro(diario, metas, mes, salida):
+def construir_libro(diario, metas, mes, salida, split=None):
+    split = SPLIT_MIXTO if split is None else split
+    uni = universo(split)
     anio, mm = int(mes[:4]), int(mes[5:7])
     dias_mes = calendar.monthrange(anio, mm)[1]
     dias_data = diario["FECHA"].nunique()
@@ -291,7 +325,7 @@ def construir_libro(diario, metas, mes, salida):
 
     # -------- CURVA --------
     wc = wb.create_sheet("CURVA")
-    escribir_curva(wc, mes, anio, mm, dias_mes, fin_d, fin_m)
+    escribir_curva(wc, mes, anio, mm, dias_mes, fin_d, fin_m, uni)
 
     # -------- CONTROL --------
     wk = wb.create_sheet("CONTROL")
@@ -299,7 +333,7 @@ def construir_libro(diario, metas, mes, salida):
 
     # -------- RESUMEN --------
     wr = wb.create_sheet("RESUMEN")
-    escribir_resumen(wr, diario, metas, fin_d, fin_m, mes)
+    escribir_resumen(wr, diario, metas, fin_d, fin_m, mes, uni)
 
     # -------- MAQUETA --------
     wq = wb.create_sheet("MAQUETA")
@@ -313,31 +347,37 @@ def construir_libro(diario, metas, mes, salida):
     return dias_data, dias_mes
 
 
-def escribir_curva(ws, mes, anio, mm, dias_mes, fin_d, fin_m):
+def escribir_curva(ws, mes, anio, mm, dias_mes, fin_d, fin_m, uni):
     """Vista del dashboard: meta vs real por dia, embudo completo y acumulados."""
-    titulo(ws, "A1", "P1",
-           f"AVANCE DIARIO {mes}  ·  Movil + Fijo (Mixto ya viene repartido)", CELESTE)
+    etq = ("Movil + Fijo (Mixto ya viene repartido)" if "MIXTO" not in uni
+           else "Movil + Fijo + Mixto")
+    titulo(ws, "A1", "P1", f"AVANCE DIARIO {mes}  ·  {etq}", CELESTE)
     encabezado(ws, 2, 1, ["Fecha", "Meta Costo", "Costo", "% Costo",
                           "Meta Lead", "Lead", "CPL",
                           "Q Neto", "CPL Neto", "Q Emi", "CPE", "Q Ter", "CPA",
                           "Costo acum", "Meta acum", "% acum"])
 
-    no_mix_d = f'DIARIO!$B$2:$B${fin_d},"<>MIXTO"'
-    no_mix_m = f'METAS_DIA!$B$2:$B${fin_m},"<>MIXTO"'
+    # Si Mixto va repartido se excluye del total; si no, entra tambien
+    filtro = ("MOVIL","FIJO") if "MIXTO" not in uni else ("MOVIL","FIJO","MIXTO")
+    def por_bloque(hoja, fin, col, celda_fecha):
+        return "+".join(
+            f'SUMIFS({hoja}!${col}$2:${col}${fin},'
+            f'{hoja}!$A$2:$A${fin},{celda_fecha},'
+            f'{hoja}!$B$2:$B${fin},"{b}")' for b in filtro)
 
     def suma_real(col, fila):
-        return (f'SUMIFS(DIARIO!${col}$2:${col}${fin_d},'
-                f'DIARIO!$A$2:$A${fin_d},$A{fila},{no_mix_d})')
+        return "(" + por_bloque("DIARIO", fin_d, col, f"$A{fila}") + ")"
+
+    def suma_meta(col, fila):
+        return "(" + por_bloque("METAS_DIA", fin_m, col, f"$A{fila}") + ")"
 
     for d in range(1, dias_mes + 1):
         r = 2 + d
         ws.cell(row=r, column=1, value=date(anio, mm, d)).number_format = "d mmm yyyy"
-        ws.cell(row=r, column=2, value=f'=SUMIFS(METAS_DIA!$D$2:$D${fin_m},'
-                                       f'METAS_DIA!$A$2:$A${fin_m},$A{r},{no_mix_m})')
+        ws.cell(row=r, column=2, value=f"={suma_meta('D', r)}")
         ws.cell(row=r, column=3, value=f"={suma_real('D', r)}")
         ws.cell(row=r, column=4, value=f"=IFERROR(C{r}/B{r},0)")
-        ws.cell(row=r, column=5, value=f'=SUMIFS(METAS_DIA!$E$2:$E${fin_m},'
-                                       f'METAS_DIA!$A$2:$A${fin_m},$A{r},{no_mix_m})')
+        ws.cell(row=r, column=5, value=f"={suma_meta('E', r)}")
         ws.cell(row=r, column=6, value=f"={suma_real('E', r)}")
         ws.cell(row=r, column=7, value=f"=IFERROR(C{r}/F{r},0)")
 
@@ -410,7 +450,7 @@ def escribir_curva(ws, mes, anio, mm, dias_mes, fin_d, fin_m):
     ws.freeze_panes = "B3"
 
 
-def escribir_resumen(ws, diario, metas, fin_d, fin_m, mes):
+def escribir_resumen(ws, diario, metas, fin_d, fin_m, mes, uni):
     """Hoja RESUMEN GENERAL: 5 tarjetas arriba y dos tablas abajo.
     Todo son formulas contra DIARIO y METAS_DIA, asi que se recalcula
     al cambiar los parametros."""
@@ -434,7 +474,7 @@ def escribir_resumen(ws, diario, metas, fin_d, fin_m, mes):
                   f'METAS_DIA!$B$2:$B${fin_m},"{b}")' for b in bloques]
         return partes[0] if len(partes) == 1 else "(" + "+".join(partes) + ")"
 
-    MF = ["MOVIL", "FIJO"]          # el universo: Mixto ya viene repartido
+    MF = list(uni)                  # el universo, sin doble conteo
     COL = {"COSTO": "D", "LEADS": "E", "Q_NETO": "F", "Q_EMI": "G", "Q_TER": "H"}
     MCOL = {"COSTO": "D", "LEADS": "E", "VENTAS": "F"}
 
@@ -455,7 +495,7 @@ def escribir_resumen(ws, diario, metas, fin_d, fin_m, mes):
     fila_t = 4
     f0_tab = fila_t + 7
     fh_tab = f0_tab + 1
-    r_mov, r_fij = fh_tab + 2, fh_tab + 3          # MOVIL y FIJO
+    r_mov, r_fij = fh_tab + 2, fh_tab + 1 + len(MF)   # primera y ultima del universo
     # Columnas del grupo Ventas y del grupo Presupuesto en esa tabla
     V_META, V_PROY = "K", "L"
     P_META, P_PROY = "B", "C"
@@ -620,8 +660,10 @@ def escribir_resumen(ws, diario, metas, fin_d, fin_m, mes):
         c.font = Font(name=FUENTE, bold=True, size=9)
         c.border = Border(top=Side(style="thin"))
     ws.cell(row=rt + 1, column=1,
-            value="TOTAL = Móvil + Fijo. Mixto no se suma: ya viene repartido "
-                  "dentro de los dos.").font = Font(name=FUENTE, size=8,
+            value=("TOTAL = Móvil + Fijo. Mixto no se suma: ya viene repartido "
+                   "dentro de los dos." if "MIXTO" not in MF else
+                   "TOTAL = Móvil + Fijo + Mixto. Los bloques están puros, "
+                   "Mixto no se reparte.")).font = Font(name=FUENTE, size=8,
                                                     italic=True, color="7F7F7F")
 
     # ---- tabla: costos unitarios ----
@@ -961,8 +1003,9 @@ if __name__ == "__main__":
           f"meta mes Movil+Fijo ${solo_mf['META_COSTO'].sum():,.0f}")
 
     print("3/3  Armando el tracking...")
+    metas = repartir_metas(metas, SPLIT_MIXTO)
     diario = construir_diario(base, mes)
-    dd, dm = construir_libro(diario, metas, mes, salida)
+    dd, dm = construir_libro(diario, metas, mes, salida, SPLIT_MIXTO)
     print(f"     {dd} dias con datos de {dm}  ->  factor {dm / dd:.4f}")
     print(f"\nListo: {salida}")
     input("\nPresiona ENTER para cerrar...")

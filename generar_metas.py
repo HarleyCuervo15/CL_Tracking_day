@@ -7,9 +7,9 @@ metas.xlsx, liviano y normalizado.
 
     python generar_metas.py "Metas_y_presupuestos_-_Septiembre_2026.xlsx"
 
-MIXTO se reparte 50/50 hacia Movil y Fijo, igual que en el real. Eso
-reproduce el 364.320.000 que la propia hoja Fijo calcula
-(304.320.000 propio + 60.000.000 de la mitad de Mixto).
+MIXTO se guarda ENTERO en su propio bloque. El reparto hacia Movil y
+Fijo se decide al usar el reporte, con el mismo porcentaje que se
+aplica al real, para que los dos lados siempre cuadren.
 """
 
 import os
@@ -169,20 +169,14 @@ def normalizar(ruta, mes=None):
             todo[c] = 0.0
     todo[CLASES] = todo[CLASES].fillna(0.0)
 
-    # MIXTO queda entero en su bloque y ademas se reparte a Movil y Fijo
-    mixto = todo[todo["BLOQUE"] == "MIXTO"].copy()
-    piezas = [todo[todo["BLOQUE"] != "MIXTO"].copy()]
-    if not mixto.empty:
-        mixto["CANAL2"] = mixto["CANAL2"] + " Mixto"
-        piezas.append(mixto)
-        for destino in ("MOVIL", "FIJO"):
-            t = mixto.copy()
-            t["BLOQUE"] = destino
-            t[CLASES] = t[CLASES] * SPLIT_MIXTO
-            piezas.append(t)
+    # MIXTO queda ENTERO en su propio bloque, sin repartir.
+    # El reparto hacia Movil y Fijo se hace despues, en tiempo de ejecucion,
+    # con el mismo porcentaje que se aplica al real. Si se quemara aqui, el
+    # control de % de Mixto solo moveria un lado y quedarian descuadrados.
+    mixto = todo["BLOQUE"] == "MIXTO"
+    todo.loc[mixto, "CANAL2"] = todo.loc[mixto, "CANAL2"] + " Mixto"
 
-    final = (pd.concat(piezas, ignore_index=True)
-             .groupby(["FECHA", "BLOQUE", "CANAL2"], as_index=False)[CLASES].sum()
+    final = (todo.groupby(["FECHA", "BLOQUE", "CANAL2"], as_index=False)[CLASES].sum()
              .sort_values(["FECHA", "BLOQUE", "CANAL2"]))
     final["FECHA"] = pd.to_datetime(final["FECHA"])
     return final, mes, avisos

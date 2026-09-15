@@ -17,7 +17,8 @@ import pandas as pd
 import streamlit as st
 
 from extraer_base import VERSION as VERSION_EXTRACTOR, extraer
-from tracking_cpe import BLOQUES, METRICAS, construir_diario, construir_libro
+from tracking_cpe import (BLOQUES, METRICAS, construir_diario,
+                          construir_libro, repartir_metas, universo)
 
 ARCHIVO_METAS = "metas.xlsx"
 
@@ -146,7 +147,15 @@ area = st.sidebar.selectbox("Área", areas,
                             index=areas.index("CANAL ONLINE")
                             if "CANAL ONLINE" in areas else 0)
 
-split = st.sidebar.slider("% de Mixto que va a Móvil y a Fijo", 0.0, 1.0, 0.50, 0.05)
+split = st.sidebar.slider(
+    "% de Mixto que va a Móvil y a Fijo", 0.0, 1.0, 0.00, 0.05,
+    help="0% = cada bloque queda puro y Mixto va aparte. "
+         "50% = el reparto que asume tu archivo de presupuesto. "
+         "Se aplica igual al real y a las metas.")
+if split == 0:
+    st.sidebar.caption("Móvil y Fijo quedan puros. Mixto se ve en su propio bloque.")
+else:
+    st.sidebar.caption(f"Móvil y Fijo incluyen {split:.0%} de Mixto cada uno.")
 solo_con_costo = st.sidebar.checkbox("Solo canales con inversión", value=False,
                                      help="Deja fuera Afiliados, TikTok y Sin clasificar, "
                                           "que generan ventas pero no tienen costo.")
@@ -254,8 +263,9 @@ factor = dias_mes / dias_data
 st.sidebar.metric("Factor de proyección", f"{factor:.4f}",
                   help=f"{dias_mes} días del mes ÷ {dias_data} días con info")
 
-metas_mes = metas[(metas["FECHA"].dt.strftime("%Y-%m") == mes) &
-                  (metas["BLOQUE"].isin(bloques_sel))]
+# El mismo reparto que se aplica al real, para que los dos lados cuadren
+metas_mes = repartir_metas(metas[metas["FECHA"].dt.strftime("%Y-%m") == mes], split)
+metas_mes = metas_mes[metas_mes["BLOQUE"].isin(bloques_sel)]
 if hay_filtro:
     metas_mes = metas_mes.iloc[0:0]
 # Meta del periodo elegido (los dias dentro del rango)
@@ -265,14 +275,12 @@ metas_per = metas_mes[(metas_mes["FECHA"].dt.date >= f_ini) &
 # ----------------------------------------------------------------
 # CALCULOS
 # ----------------------------------------------------------------
-# Si se piden los tres bloques, Mixto se excluye porque ya viene repartido
-# dentro de Movil y Fijo. Si se pide Mixto solo, se usa tal cual.
-if set(bloques_sel) == {"MIXTO"}:
-    mf, mfm = diario, metas_mes
-else:
-    mf = diario[diario["BLOQUE"] != "MIXTO"]
-    mfm = metas_mes[metas_mes["BLOQUE"] != "MIXTO"]
-    metas_per = metas_per[metas_per["BLOQUE"] != "MIXTO"]
+# Bloques que suman el total sin contar dos veces: si Mixto se reparte,
+# ya esta dentro de Movil y Fijo; si no, entra por su cuenta.
+UNI = [b for b in universo(split) if b in bloques_sel] or bloques_sel
+mf = diario[diario["BLOQUE"].isin(UNI)]
+mfm = metas_mes[metas_mes["BLOQUE"].isin(UNI)]
+metas_per = metas_per[metas_per["BLOQUE"].isin(UNI)]
 
 dias_ventana = [d.day for d in pd.date_range(f_ini, f_fin)]
 curva = (mf.groupby(mf["FECHA"].dt.day, observed=True)[METRICAS].sum()
@@ -302,7 +310,8 @@ def div(a, b):
 st.title(f"Tracking y proyección · {mes}")
 etq_bloque = ("Móvil + Fijo" if set(bloques_sel) == set(BLOQUES)
               else " + ".join(b.title() for b in bloques_sel))
-st.caption(f"{area} · {etq_bloque} (Mixto repartido al {split:.0%}) · "
+etq_mix = ("Mixto aparte" if split == 0 else f"Mixto repartido al {split:.0%}")
+st.caption(f"{area} · {etq_bloque} ({etq_mix}) · "
            f"del {f_ini:%d/%m} al {f_fin:%d/%m} · {dias_data} de {dias_mes} días · "
            f"proyección run-rate ×{factor:.4f}")
 
@@ -396,7 +405,7 @@ t0, t1, t2, t3, t4 = st.tabs(["Resumen", "Curva diaria", "Maqueta",
 
 with t0:
     ETQ = {"MOVIL": "MÓVIL", "FIJO": "FIJO", "MIXTO": "MIXTO"}
-    usa = [b for b in bloques_sel if b != "MIXTO"] or bloques_sel
+    usa = UNI
 
     rb = (diario.groupby("BLOQUE", observed=True)[METRICAS].sum()
           .reindex(bloques_sel, fill_value=0))
@@ -472,9 +481,12 @@ with t0:
         {c: ("{:.0%}" if c[1] == "% cumpl." else
              ("${:,.0f}" if c[0] == "Presupuesto" else "{:,.0f}"))
          for c in tc.columns}), width="stretch")
-    st.caption("TOTAL = Móvil + Fijo. Mixto no se suma: ya viene repartido dentro "
-               "de los dos. Emisiones no tiene meta en el presupuesto, y la de "
-               "ventas solo viene cargada para algunos bloques.")
+    st.caption(
+        ("TOTAL = " + " + ".join(ETQ.get(b, b) for b in usa) + ". " +
+         ("Mixto no se suma: ya viene repartido dentro de los dos. "
+          if "MIXTO" not in usa else "Los bloques están puros. ") +
+         "Emisiones no tiene meta en el presupuesto, y la de ventas solo "
+         "viene cargada para algunos bloques."))
 
     st.markdown("##### Costos")
     filas = []
@@ -642,7 +654,7 @@ with t4:
     if st.button("Generar Excel", type="primary"):
         with st.spinner("Armando el archivo..."):
             ruta = os.path.join(tempfile.mkdtemp(), f"Tracking_CPE_{mes}.xlsx")
-            construir_libro(diario, metas_mes, mes, ruta)
+            construir_libro(diario, metas_mes, mes, ruta, split)
             with open(ruta, "rb") as fh:
                 datos = fh.read()
         st.download_button("Descargar", datos, file_name=f"Tracking_CPE_{mes}.xlsx",
