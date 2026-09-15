@@ -18,7 +18,8 @@ import streamlit as st
 
 from extraer_base import VERSION as VERSION_EXTRACTOR, extraer
 from tracking_cpe import (BLOQUES, METRICAS, construir_diario,
-                          construir_libro, repartir_metas, universo)
+                          construir_libro, limpiar_metas, repartir_metas,
+                          universo)
 
 ARCHIVO_METAS = "metas.xlsx"
 
@@ -57,7 +58,9 @@ def cargar_base(contenido: bytes, version: int) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def cargar_metas(contenido: bytes | None) -> pd.DataFrame:
+def cargar_metas(contenido: bytes | None, huella: tuple = ()) -> pd.DataFrame:
+    """huella entra en la llave del cache: si el metas.xlsx del disco cambia,
+    el resultado guardado deja de valer solo."""
     if contenido is None:
         if not os.path.exists(ARCHIVO_METAS):
             return pd.DataFrame(columns=["FECHA", "BLOQUE", "CANAL2", "META_COSTO",
@@ -135,7 +138,15 @@ if subida is None:
 with st.spinner("Leyendo la base que viene dentro de la maqueta (~30 s la primera vez)..."):
     base = cargar_base(subida.getvalue(), VERSION_EXTRACTOR)
 
-metas = cargar_metas(metas_subidas.getvalue() if metas_subidas else None)
+if metas_subidas:
+    metas = cargar_metas(metas_subidas.getvalue())
+else:
+    try:
+        _st = os.stat(ARCHIVO_METAS)
+        huella = (round(_st.st_mtime, 3), _st.st_size)
+    except OSError:
+        huella = ()
+    metas = cargar_metas(None, huella)
 
 meses_base = sorted(base["MES"].dropna().unique())
 por_defecto = date.today().strftime("%Y-%m")
@@ -264,7 +275,9 @@ st.sidebar.metric("Factor de proyección", f"{factor:.4f}",
                   help=f"{dias_mes} días del mes ÷ {dias_data} días con info")
 
 # El mismo reparto que se aplica al real, para que los dos lados cuadren
-metas_mes = repartir_metas(metas[metas["FECHA"].dt.strftime("%Y-%m") == mes], split)
+_mes_metas = metas[metas["FECHA"].dt.strftime("%Y-%m") == mes]
+_mes_metas, venia_repartido = limpiar_metas(_mes_metas)
+metas_mes = repartir_metas(_mes_metas, split)
 metas_mes = metas_mes[metas_mes["BLOQUE"].isin(bloques_sel)]
 if hay_filtro:
     metas_mes = metas_mes.iloc[0:0]
@@ -334,6 +347,14 @@ if hay_filtro:
         f"por tipo y canal, no por producto ni plataforma. Repartirlo sería inventar "
         f"un número. Aquí ves real y proyectado; para comparar contra meta, quita "
         f"los filtros.")
+
+if venia_repartido:
+    st.warning(
+        "**El archivo de metas traía el reparto de Mixto adentro.** Le quité las "
+        "filas '… Mixto' de Móvil y Fijo, porque el bloque Mixto ya trae el monto "
+        "completo y si no quedaría contado dos veces. Los números de esta pantalla "
+        "ya están corregidos. Para dejarlo limpio de raíz, vuelve a generar "
+        "metas.xlsx con generar_metas.py y súbelo al repositorio.")
 
 alertas = revisar_calidad(curva, dias_data, MESES[mm - 1])
 if not alertas.empty:

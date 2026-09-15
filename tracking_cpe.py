@@ -207,6 +207,22 @@ def universo(split=None):
     return ["MOVIL", "FIJO"] if split else ["MOVIL", "FIJO", "MIXTO"]
 
 
+def limpiar_metas(metas):
+    """Quita el reparto de Mixto si viene quemado en el archivo.
+
+    Las versiones viejas de metas.xlsx guardaban filas '<canal> Mixto'
+    dentro de MOVIL y FIJO con la mitad del monto. Como el bloque MIXTO
+    ya trae el monto completo, esas filas sobran: se eliminan para que el
+    reparto lo decida el usuario. Devuelve (metas, venia_repartido)."""
+    if metas is None or metas.empty:
+        return metas, False
+    sobra = ((metas["BLOQUE"] != "MIXTO") &
+             metas["CANAL2"].astype(str).str.endswith(" Mixto"))
+    if not sobra.any():
+        return metas, False
+    return metas[~sobra].copy(), True
+
+
 def repartir_metas(metas, split=None):
     """Mixto queda entero en su bloque y ademas se reparte a Movil y Fijo,
     exactamente igual que el real. Con split=0 los bloques quedan puros:
@@ -214,6 +230,7 @@ def repartir_metas(metas, split=None):
     split = SPLIT_MIXTO if split is None else split
     if metas is None or metas.empty:
         return metas
+    metas, _ = limpiar_metas(metas)
     cols = [c for c in ("META_COSTO", "META_LEADS", "META_VENTAS")
             if c in metas.columns]
 
